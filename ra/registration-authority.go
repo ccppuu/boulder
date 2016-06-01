@@ -71,7 +71,7 @@ type RegistrationAuthorityImpl struct {
 }
 
 // NewRegistrationAuthorityImpl constructs a new RA object.
-func NewRegistrationAuthorityImpl(clk clock.Clock, logger blog.Logger, stats statsd.Statter, dc *DomainCheck, policies ratelimit.RateLimitConfig, maxContactsPerReg int, keyPolicy core.KeyPolicy, newVARPC bool, maxNames int, forceCNFromSAN bool) *RegistrationAuthorityImpl {
+func NewRegistrationAuthorityImpl(clk clock.Clock, logger blog.Logger, stats statsd.Statter, dc *DomainCheck, maxContactsPerReg int, keyPolicy core.KeyPolicy, newVARPC bool, maxNames int, forceCNFromSAN bool) *RegistrationAuthorityImpl {
 	// TODO(jmhodges): making RA take a "RA" stats.Scope, not Statter
 	scope := metrics.NewStatsdScope(stats, "RA")
 	ra := &RegistrationAuthorityImpl{
@@ -81,18 +81,28 @@ func NewRegistrationAuthorityImpl(clk clock.Clock, logger blog.Logger, stats sta
 		dc:    dc,
 		authorizationLifetime:        DefaultAuthorizationLifetime,
 		pendingAuthorizationLifetime: DefaultPendingAuthorizationLifetime,
-		rlPolicies:                   policies,
-		tiMu:                         new(sync.RWMutex),
-		maxContactsPerReg:            maxContactsPerReg,
-		keyPolicy:                    keyPolicy,
-		maxNames:                     maxNames,
-		forceCNFromSAN:               forceCNFromSAN,
-		regByIPStats:                 scope.NewScope("RA", "RateLimit", "RegistrationsByIP"),
-		pendAuthByRegIDStats:         scope.NewScope("RA", "RateLimit", "PendingAuthorizationsByRegID"),
-		certsForDomainStats:          scope.NewScope("RA", "RateLimit", "CertificatesForDomain"),
-		totalCertsStats:              scope.NewScope("RA", "RateLimit", "TotalCertificates"),
+		tiMu:                 new(sync.RWMutex),
+		maxContactsPerReg:    maxContactsPerReg,
+		keyPolicy:            keyPolicy,
+		maxNames:             maxNames,
+		forceCNFromSAN:       forceCNFromSAN,
+		regByIPStats:         scope.NewScope("RA", "RateLimit", "RegistrationsByIP"),
+		pendAuthByRegIDStats: scope.NewScope("RA", "RateLimit", "PendingAuthorizationsByRegID"),
+		certsForDomainStats:  scope.NewScope("RA", "RateLimit", "CertificatesForDomain"),
+		totalCertsStats:      scope.NewScope("RA", "RateLimit", "TotalCertificates"),
 	}
 	return ra
+}
+
+func (ra *RegistrationAuthorityImpl) SetRateLimitPoliciesFile(filename string) error {
+	rateLimitPolicies, err := ratelimit.LoadRateLimitPolicies(filename)
+
+	if err != nil {
+		return err
+	}
+
+	ra.rlPolicies = rateLimitPolicies
+	return nil
 }
 
 const (

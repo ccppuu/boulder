@@ -14,7 +14,6 @@ import (
 	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/policy"
 	"github.com/letsencrypt/boulder/ra"
-	"github.com/letsencrypt/boulder/ratelimit"
 	"github.com/letsencrypt/boulder/rpc"
 )
 
@@ -36,9 +35,6 @@ func main() {
 		}
 		err = pa.SetHostnamePolicyFile(c.RA.HostnamePolicyFile)
 		cmd.FailOnError(err, "Couldn't load hostname policy file")
-
-		rateLimitPolicies, err := ratelimit.LoadRateLimitPolicies(c.RA.RateLimitPoliciesFilename)
-		cmd.FailOnError(err, "Couldn't load rate limit policies file")
 
 		go cmd.ProfileCmd("RA", stats)
 
@@ -65,8 +61,10 @@ func main() {
 		}
 
 		rai := ra.NewRegistrationAuthorityImpl(clock.Default(), logger, stats,
-			dc, rateLimitPolicies, c.RA.MaxContactsPerRegistration, c.KeyPolicy(),
+			dc, c.RA.MaxContactsPerRegistration, c.KeyPolicy(),
 			c.RA.UseNewVARPC, c.RA.MaxNames, c.RA.DoNotForceCN)
+		policyErr := rai.SetRateLimitPoliciesFile(c.RA.RateLimitPoliciesFilename)
+		cmd.FailOnError(policyErr, "Couldn't load rate limit policies file")
 		rai.PA = pa
 		raDNSTimeout, err := time.ParseDuration(c.Common.DNSTimeout)
 		cmd.FailOnError(err, "Couldn't parse RA DNS timeout")
