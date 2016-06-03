@@ -55,13 +55,8 @@ func main() {
 		sac, err := rpc.NewStorageAuthorityClient(clientName, amqpConf, stats)
 		cmd.FailOnError(err, "Unable to create SA client")
 
-		var dc *ra.DomainCheck
-		if c.RA.UseIsSafeDomain {
-			dc = &ra.DomainCheck{VA: vac}
-		}
-
 		rai := ra.NewRegistrationAuthorityImpl(clock.Default(), logger, stats,
-			dc, c.RA.MaxContactsPerRegistration, c.KeyPolicy(),
+			c.RA.MaxContactsPerRegistration, c.KeyPolicy(),
 			c.RA.UseNewVARPC, c.RA.MaxNames, c.RA.DoNotForceCN)
 		policyErr := rai.SetRateLimitPoliciesFile(c.RA.RateLimitPoliciesFilename)
 		cmd.FailOnError(policyErr, "Couldn't load rate limit policies file")
@@ -83,9 +78,9 @@ func main() {
 		rai.CA = cac
 		rai.SA = sac
 
-		ras, err := rpc.NewAmqpRPCServer(amqpConf, c.RA.MaxConcurrentRPCServerRequests, stats)
+		ras, err := rpc.NewAmqpRPCServer(amqpConf, c.RA.MaxConcurrentRPCServerRequests, stats, logger)
 		cmd.FailOnError(err, "Unable to create RA RPC server")
-		err = rpc.NewRegistrationAuthorityServer(ras, rai)
+		err = rpc.NewRegistrationAuthorityServer(ras, rai, logger)
 		cmd.FailOnError(err, "Unable to setup RA RPC server")
 
 		err = ras.Start(amqpConf)
