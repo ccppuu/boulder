@@ -51,8 +51,7 @@ func main() {
 	var toFile = flag.String("toFile", "", "File containing a list of email addresses to send to, one per file.")
 	var template = flag.String("template", "", "Email template in Golang template format. Can be plain text.")
 	var dryRun = flag.Bool("dryRun", true, "Whether to do a dry run.")
-	var maxSleep = flag.Duration("maxSleep", 60*time.Second, "How long to sleep between emails to start out.")
-	var minSleep = flag.Duration("maxSleep", 100*time.Millisecond, "How long to sleep between emails to start out.")
+	var sleep = flag.Duration("sleep", 60*time.Second, "How long to sleep between emails.")
 	var start = flag.Int("start", 0, "Line of input file to start from.")
 	var end = flag.Int("end", 99999999, "Line of input file to end before.")
 	type config struct {
@@ -123,10 +122,10 @@ func main() {
 		mailer:        mailClient,
 		subject:       *subject,
 		destinations:  destinations,
-		emailTemplate: emailTemplate,
-		begin:         *begin,
+		emailTemplate: string(emailTemplate),
+		begin:         *start,
 		end:           *end,
-		sleepInterval: *maxSleep,
+		sleepInterval: *sleep,
 	}
 
 	err = m.run()

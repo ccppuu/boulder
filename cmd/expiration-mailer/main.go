@@ -367,7 +367,7 @@ func main() {
 			log:           logger,
 			dbMap:         dbMap,
 			rs:            sac,
-			mailer:        &mailClient,
+			mailer:        mailClient,
 			emailTemplate: tmpl,
 			nagTimes:      nags,
 			limit:         c.Mailer.CertLimit,
