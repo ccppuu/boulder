@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -27,13 +28,47 @@ type mailer struct {
 	subject       string
 	emailTemplate string
 	destinations  []string
-	begin, end    int // The first and (last + 1) destination to actually send mail to.
+	checkpoint    interval
 	sleepInterval time.Duration
+}
+
+type interval struct {
+	start int
+	end   int
+	count int
+}
+
+func (i *interval) isSane() error {
+	if i.start < 0 || i.end < 0 {
+		return errors.New(fmt.Sprintf(
+			"interval start (%d) and end (%d) must both be positive integers",
+			i.start, i.end))
+	}
+
+	if i.start >= i.end {
+		return errors.New(fmt.Sprintf(
+			"interval start value (%d) is greater than end value (%d)",
+			i.start, i.end))
+	}
+
+	if i.start >= i.count {
+		return errors.New(fmt.Sprintf(
+			"interval start value (%d) is greater than or equal to number of lines (%d)",
+			i.start, i.count))
+	}
+
+	if i.end > i.count {
+		return errors.New(fmt.Sprintf(
+			"interval end value (%d) is greater than number of lines (%d)",
+			i.end, i.count))
+	}
+
+	return nil
 }
 
 func (m *mailer) run() error {
 	for i, dest := range m.destinations {
-		if i < m.begin || i >= m.end {
+		if i < m.checkpoint.start || i >= m.checkpoint.end {
 			continue
 		}
 		err := m.mailer.SendMail([]string{dest}, m.subject, m.emailTemplate)
@@ -49,7 +84,7 @@ func main() {
 	var from = flag.String("from", "", "From header for emails. Must be a bare email address.")
 	var subject = flag.String("subject", "", "Subject of emails")
 	var toFile = flag.String("toFile", "", "File containing a list of email addresses to send to, one per file.")
-	var template = flag.String("template", "", "Email template in Golang template format. Can be plain text.")
+	var bodyFile = flag.String("body", "", "File containing the email body in plain text format.")
 	var dryRun = flag.Bool("dryRun", true, "Whether to do a dry run.")
 	var sleep = flag.Duration("sleep", 60*time.Second, "How long to sleep between emails.")
 	var start = flag.Int("start", 0, "Line of input file to start from.")
@@ -64,7 +99,7 @@ func main() {
 	var configFile = flag.String("configFile", "", "File containing a JSON config.")
 
 	flag.Parse()
-	if from == nil || subject == nil || template == nil || configFile == nil {
+	if from == nil || subject == nil || bodyFile == nil || configFile == nil {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -83,9 +118,9 @@ func main() {
 	dbMap, err := sa.NewDbMap(dbURL, 10)
 	cmd.FailOnError(err, "Could not connect to database")
 
-	// Load email template
-	emailTemplate, err := ioutil.ReadFile(*template)
-	cmd.FailOnError(err, fmt.Sprintf("Reading %s", *template))
+	// Load email body
+	body, err := ioutil.ReadFile(*bodyFile)
+	cmd.FailOnError(err, fmt.Sprintf("Reading %s", *bodyFile))
 
 	address, err := netmail.ParseAddress(*from)
 	cmd.FailOnError(err, fmt.Sprintf("Parsing %s", *from))
@@ -93,6 +128,16 @@ func main() {
 	toBody, err := ioutil.ReadFile(*toFile)
 	cmd.FailOnError(err, fmt.Sprintf("Reading %s", *toFile))
 	destinations := strings.Split(string(toBody), "\n")
+	destinationCount := len(destinations)
+
+	checkpointRange := interval{
+		start: *start,
+		end:   *end,
+		count: destinationCount,
+	}
+
+	checkpointErr := checkpointRange.isSane()
+	cmd.FailOnError(checkpointErr, "Building checkpoint range")
 
 	var mailClient mail.Mailer
 	if *dryRun {
@@ -122,9 +167,8 @@ func main() {
 		mailer:        mailClient,
 		subject:       *subject,
 		destinations:  destinations,
-		emailTemplate: string(emailTemplate),
-		begin:         *start,
-		end:           *end,
+		emailTemplate: string(body),
+		checkpoint:    checkpointRange,
 		sleepInterval: *sleep,
 	}
 
