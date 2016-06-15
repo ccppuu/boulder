@@ -35,7 +35,6 @@ type mailer struct {
 type interval struct {
 	start int
 	end   int
-	count int
 }
 
 func (i *interval) isSane() error {
@@ -45,28 +44,26 @@ func (i *interval) isSane() error {
 			i.start, i.end))
 	}
 
-	if i.start >= i.end {
+	if i.start > i.end && i.end != 0 {
 		return errors.New(fmt.Sprintf(
 			"interval start value (%d) is greater than end value (%d)",
 			i.start, i.end))
-	}
-
-	if i.start >= i.count {
-		return errors.New(fmt.Sprintf(
-			"interval start value (%d) is greater than or equal to number of lines (%d)",
-			i.start, i.count))
-	}
-
-	if i.end > i.count {
-		return errors.New(fmt.Sprintf(
-			"interval end value (%d) is greater than number of lines (%d)",
-			i.end, i.count))
 	}
 
 	return nil
 }
 
 func (m *mailer) run() error {
+	if m.checkpoint.start > len(m.destinations) {
+		return errors.New(fmt.Sprintf(
+			"interval start value (%d) is greater than number of destinations (%d)",
+			m.checkpoint.start,
+			len(m.destinations)))
+	}
+	if m.sleepInterval < 0 {
+		return errors.New(fmt.Sprintf(
+			"sleep interval (%d) is < 0", m.sleepInterval))
+	}
 	for i, dest := range m.destinations {
 		if i < m.checkpoint.start || i >= m.checkpoint.end {
 			continue
@@ -75,7 +72,7 @@ func (m *mailer) run() error {
 		if err != nil {
 			return err
 		}
-		time.Sleep(m.sleepInterval)
+		m.clk.Sleep(m.sleepInterval)
 	}
 	return nil
 }
@@ -128,12 +125,10 @@ func main() {
 	toBody, err := ioutil.ReadFile(*toFile)
 	cmd.FailOnError(err, fmt.Sprintf("Reading %s", *toFile))
 	destinations := strings.Split(string(toBody), "\n")
-	destinationCount := len(destinations)
 
 	checkpointRange := interval{
 		start: *start,
 		end:   *end,
-		count: destinationCount,
 	}
 
 	checkpointErr := checkpointRange.isSane()

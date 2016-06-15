@@ -1,31 +1,231 @@
 package main
 
 import (
+	"fmt"
+	"io/ioutil"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jmhodges/clock"
-	"gopkg.in/gorp.v1"
 
-	"github.com/letsencrypt/boulder/core"
-	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/mocks"
-	"github.com/letsencrypt/boulder/sa"
 	"github.com/letsencrypt/boulder/test"
-	"github.com/letsencrypt/boulder/test/vars"
 )
 
-var (
-	log = blog.UseMock()
-)
+func TestCheckpointInterval(t *testing.T) {
+	// Test a number of intervals know to be sane, ensure that no error is
+	// produced when calling `isSane()`.
+	okCases := []struct {
+		testInterval interval
+	}{
+		{interval{}},
+		{interval{start: 10}},
+		{interval{end: 10}},
+		{interval{start: 10, end: 15}},
+	}
+	for _, testcase := range okCases {
+		err := testcase.testInterval.isSane()
+		test.AssertNotError(t, err, "valid interval produced isSane error")
+	}
 
-type testCtx struct {
-	dbMap   *gorp.DbMap
-	ssa     core.StorageAdder
-	mc      *mocks.Mailer
-	fc      clock.FakeClock
-	m       *mailer
-	cleanUp func()
+	// Test a number of intervals known to be invalid, ensure that the produced
+	// error has the expected message.
+	failureCases := []struct {
+		testInterval  interval
+		expectedError string
+	}{
+		{interval{start: -1}, "interval start (-1) and end (0) must both be positive integers"},
+		{interval{end: -1}, "interval start (0) and end (-1) must both be positive integers"},
+		{interval{start: -1, end: -1}, "interval start (-1) and end (-1) must both be positive integers"},
+		{interval{start: 999, end: 10}, "interval start value (999) is greater than end value (10)"},
+	}
+	for _, testcase := range failureCases {
+		err := testcase.testInterval.isSane()
+		test.AssertNotNil(t, err, fmt.Sprintf("Invalid interval %#v was sane", testcase.testInterval))
+		test.AssertEquals(t, err.Error(), testcase.expectedError)
+	}
+}
+
+func TestSleepInterval(t *testing.T) {
+	const sleepLen = 10
+	mc := &mocks.Mailer{}
+
+	// Set up a mock mailer that sleeps for `sleepLen` seconds
+	m := &mailer{
+		mailer:        mc,
+		emailTemplate: "",
+		sleepInterval: sleepLen * time.Second,
+		checkpoint:    interval{start: 0, end: 3},
+		clk:           newFakeClock(t),
+		destinations:  []string{"test@example.com", "test2@example.com", "test3@example.com"},
+	}
+
+	// Call run() - this should sleep `sleepLen` per destination address
+	m.run()
+	// At the end, we expect (sleepLen * number of destinations) seconds has
+	// elapsed
+	expectedEnd := newFakeClock(t)
+	expectedEnd.Add(time.Second * time.Duration(sleepLen*len(m.destinations)))
+	test.AssertEquals(t, m.clk.Now(), expectedEnd.Now())
+
+	// Set up a mock mailer that doesn't sleep at all
+	m = &mailer{
+		mailer:        mc,
+		emailTemplate: "",
+		sleepInterval: 0,
+		checkpoint:    interval{start: 0, end: 3},
+		clk:           newFakeClock(t),
+		destinations:  []string{"test@example.com", "test2@example.com", "test3@example.com"},
+	}
+
+	// Call run() - this should blast through all destinations without sleep
+	m.run()
+	// At the end, we expect no clock time to have elapsed on the fake clock
+	expectedEnd = newFakeClock(t)
+	test.AssertEquals(t, m.clk.Now(), expectedEnd.Now())
+}
+
+func TestMailCheckpointing(t *testing.T) {
+	const testSubject = "Test Subject"
+
+	testDestinationsBody, err := ioutil.ReadFile("testdata/test_msg_recipients.txt")
+	test.AssertNotError(t, err, "failed to read testdata/test_msg_recipients.txt")
+	testDestinations := strings.Split(string(testDestinationsBody), "\n")
+
+	testBody, err := ioutil.ReadFile("testdata/test_msg_body.txt")
+	test.AssertNotError(t, err, "failed to read testdata/test_msg_body.txt")
+	mc := &mocks.Mailer{}
+
+	// Create a mailer with a checkpoint interval larger than the number of
+	// destinations
+	m := &mailer{
+		mailer:        mc,
+		subject:       testSubject,
+		destinations:  testDestinations,
+		emailTemplate: string(testBody),
+		checkpoint:    interval{start: 99999, end: 900000},
+		sleepInterval: 0,
+		clk:           newFakeClock(t),
+	}
+
+	// Run the mailer. It should produce an error about the interval start
+	mc.Clear()
+	err = m.run()
+	test.AssertEquals(t, len(mc.Messages), 0)
+	test.AssertEquals(t, err.Error(), "interval start value (99999) is greater than number of destinations (7)")
+
+	// Create a mailer with a negative sleep interval
+	m = &mailer{
+		mailer:        mc,
+		subject:       testSubject,
+		destinations:  testDestinations,
+		emailTemplate: string(testBody),
+		checkpoint:    interval{},
+		sleepInterval: -10,
+		clk:           newFakeClock(t),
+	}
+
+	// Run the mailer. It should produce an error about the sleep interval
+	mc.Clear()
+	err = m.run()
+	test.AssertEquals(t, len(mc.Messages), 0)
+	test.AssertEquals(t, err.Error(), "sleep interval (-10) is < 0")
+
+	// Create a mailer with a checkpoint interval of 2 destinations from the
+	// middle of the file
+	m = &mailer{
+		mailer:        mc,
+		subject:       testSubject,
+		destinations:  testDestinations,
+		emailTemplate: string(testBody),
+		checkpoint:    interval{start: 3, end: 5},
+		sleepInterval: 0,
+		clk:           newFakeClock(t),
+	}
+
+	// Run the mailer. Two messages should have been produced, one to
+	// test-example@example.com (Line 4 of test_msg_recipients.txt) and another
+	// one destined to test-test-test@example.com (Line 5)
+	mc.Clear()
+	err = m.run()
+	test.AssertNotError(t, err, "run() produced an error")
+	test.AssertEquals(t, len(mc.Messages), 2)
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      "test-example@example.com",
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[0])
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      "test-test-test@example.com",
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[1])
+
+	// Create a mailer with a checkpoint interval ending in 3 messages
+	m = &mailer{
+		mailer:        mc,
+		subject:       testSubject,
+		destinations:  testDestinations,
+		emailTemplate: string(testBody),
+		checkpoint:    interval{end: 3},
+		sleepInterval: 0,
+		clk:           newFakeClock(t),
+	}
+
+	// Run the mailer. Three messages should have been produced, one to
+	// test@example.com (Line 1 of test_msg_recipients.txt), one to
+	// example@example.com (Line 2), and one to example-test@example.com (Line 3)
+	// one destined to test-test-test@example.com (Line 4)
+	mc.Clear()
+	err = m.run()
+	test.AssertNotError(t, err, "run() produced an error")
+	test.AssertEquals(t, len(mc.Messages), 3)
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      "test@example.com",
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[0])
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      "example@example.com",
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[1])
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      "example-test@example.com",
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[2])
+}
+
+func TestMessageContent(t *testing.T) {
+	// Create a mailer with fixed content
+	const (
+		testDestination = "test@example.com"
+		testSubject     = "Test Subject"
+	)
+	testBody, err := ioutil.ReadFile("testdata/test_msg_body.txt")
+	test.AssertNotError(t, err, "failed to read testdata/test_msg_body.txt")
+	mc := &mocks.Mailer{}
+	m := &mailer{
+		mailer:        mc,
+		subject:       testSubject,
+		destinations:  []string{testDestination},
+		emailTemplate: string(testBody),
+		checkpoint:    interval{start: 0, end: 1},
+		sleepInterval: 0,
+		clk:           newFakeClock(t),
+	}
+
+	// Run the mailer, one message should have been created with the content
+	// expected
+	m.run()
+	test.AssertEquals(t, len(mc.Messages), 1)
+	test.AssertEquals(t, mocks.MailerMessage{
+		To:      testDestination,
+		Subject: testSubject,
+		Body:    string(testBody),
+	}, mc.Messages[0])
 }
 
 func newFakeClock(t *testing.T) clock.FakeClock {
@@ -37,37 +237,4 @@ func newFakeClock(t *testing.T) clock.FakeClock {
 	fc := clock.NewFake()
 	fc.Set(ft.UTC())
 	return fc
-}
-
-func setup(t *testing.T) *testCtx {
-	// We use the test_setup user (which has full permissions to everything)
-	// because the SA we return is used for inserting data to set up the test.
-	dbMap, err := sa.NewDbMap(vars.DBConnSAFullPerms, 0)
-	if err != nil {
-		t.Fatalf("Couldn't connect the database: %s", err)
-	}
-	fc := newFakeClock(t)
-	ssa, err := sa.NewSQLStorageAuthority(dbMap, fc, log)
-	if err != nil {
-		t.Fatalf("unable to create SQLStorageAuthority: %s", err)
-	}
-	cleanUp := test.ResetSATestDatabase(t)
-
-	mc := &mocks.Mailer{}
-
-	m := &mailer{
-		log:           log,
-		mailer:        mc,
-		emailTemplate: "",
-		dbMap:         dbMap,
-		clk:           fc,
-	}
-	return &testCtx{
-		dbMap:   dbMap,
-		ssa:     ssa,
-		mc:      mc,
-		fc:      fc,
-		m:       m,
-		cleanUp: cleanUp,
-	}
 }
