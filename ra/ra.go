@@ -3,6 +3,7 @@ package ra
 import (
 	"crypto/x509"
 	"errors"
+	"expvar"
 	"fmt"
 	"net"
 	"net/mail"
@@ -63,6 +64,7 @@ type RegistrationAuthorityImpl struct {
 	lastIssuedCount              *time.Time
 	maxContactsPerReg            int
 	maxNames                     int
+	issuanceLoad                 *issuanceLoadStat
 	forceCNFromSAN               bool
 	reuseValidAuthz              bool
 
@@ -70,6 +72,80 @@ type RegistrationAuthorityImpl struct {
 	pendAuthByRegIDStats metrics.Scope
 	certsForDomainStats  metrics.Scope
 	totalCertsStats      metrics.Scope
+}
+
+// The issuanceLoadStat allows us to expose 5 minutes of RA issuance volume as an expvar.
+// Internally a circular slice of 60 counts is maintained (one for each minute).
+// When a certificate is issued we increment the count in the current minutes'
+// bucket. A Go routine monitoring a ticket updates the expvar periodically with
+// the past 5 minutes of buckets totalled up.
+type issuanceLoadStat struct {
+	sync.RWMutex
+	issuedCounts     []int
+	fiveMinCertCount *expvar.Int
+	ticker           *time.Ticker
+	clk              clock.Clock
+}
+
+// Spawn a Go routine blocking on the ticker
+func (i *issuanceLoadStat) updateForever() {
+	go func() {
+		for {
+			<-i.ticker.C
+			// TODO(cpu): Remove printf
+			fmt.Printf("issuanceLoadStat updateForever() Woke up\n")
+			// When the ticket wakes up the Go routine, count up the issuances and
+			// update the expvar
+			count := i.countIssuances()
+			i.fiveMinCertCount.Set(int64(count))
+		}
+	}()
+}
+
+func (i *issuanceLoadStat) countIssuances() int {
+	const windowSize = 5 // # of minutes of issuances to sum
+
+	// Calculate a sum over the last `windowSize` buckets of the `issuedCounts`
+	// slice, wrapping around as required to stay within the 60 buckets.
+	i.RLock()
+	sum := 0
+	cur := i.clk.Now().Minute()
+	for j := windowSize; j >= 0; j-- {
+		offset := (cur - j) % 60
+		// Note: Go's % operator is remainder, not modulus and we need to handle the
+		// negative case ourselves
+		if offset < 0 {
+			offset = offset + 60
+		}
+		sum += i.issuedCounts[offset]
+	}
+	i.RUnlock()
+
+	return sum
+}
+
+func (i *issuanceLoadStat) issuedCert() {
+	// Increment the bucket for this minute's issuance count
+	cur := i.clk.Now().Minute()
+	i.Lock()
+	i.issuedCounts[cur] = i.issuedCounts[cur] + 1
+	i.Unlock()
+}
+
+func newIssuanceLoadStat(clk clock.Clock) *issuanceLoadStat {
+	const tickerDuration = time.Second * 60
+	stat := &issuanceLoadStat{
+		issuedCounts:     make([]int, 60),
+		fiveMinCertCount: expvar.NewInt("fiveMinCertCount"),
+		ticker:           time.NewTicker(tickerDuration),
+		clk:              clk,
+	}
+	// Initialize buckets with a count of 1 to work around a fresh startup
+	for i := range stat.issuedCounts {
+		stat.issuedCounts[i] = 1
+	}
+	stat.updateForever()
+	return stat
 }
 
 // NewRegistrationAuthorityImpl constructs a new RA object.
@@ -97,6 +173,7 @@ func NewRegistrationAuthorityImpl(
 		maxNames:                     maxNames,
 		forceCNFromSAN:               forceCNFromSAN,
 		reuseValidAuthz:              reuseValidAuthz,
+		issuanceLoad:                 newIssuanceLoadStat(clk),
 		regByIPStats:                 scope.NewScope("RA", "RateLimit", "RegistrationsByIP"),
 		pendAuthByRegIDStats:         scope.NewScope("RA", "RateLimit", "PendingAuthorizationsByRegID"),
 		certsForDomainStats:          scope.NewScope("RA", "RateLimit", "CertificatesForDomain"),
@@ -645,6 +722,7 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 
 	logEventResult = "successful"
 
+	ra.issuanceLoad.issuedCert()
 	ra.stats.Inc("RA.NewCertificates", 1, 1.0)
 	return cert, nil
 }
