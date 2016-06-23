@@ -92,8 +92,6 @@ func (i *issuanceLoadStat) updateForever() {
 	go func() {
 		for {
 			<-i.ticker.C
-			// TODO(cpu): Remove printf
-			fmt.Printf("issuanceLoadStat updateForever() Woke up\n")
 			// When the ticket wakes up the Go routine, count up the issuances and
 			// update the expvar
 			count := i.countIssuances()
