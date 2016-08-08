@@ -11,8 +11,8 @@
       "ConfigFile": "test/test-ca.key-pkcs11.json",
       "CertFile": "test/test-ca.pem"
     }],
-    "expiry": "2160h",
-    "lifespanOCSP": "96h",
+    "expiry": "24h",
+    "lifespanOCSP": "24h",
     "maxNames": 1000,
     "doNotForceCN": true,
     "enableMustStaple": true,
@@ -27,7 +27,7 @@
               "server auth",
               "client auth"
             ],
-            "backdate": "1h",
+            "backdate": "0s",
             "is_ca": false,
             "issuer_urls": [
               "http://127.0.0.1:4000/acme/issuer-cert"
@@ -45,11 +45,11 @@
                   "value": "http://example.com/cps"
                 }, {
                   "type": "id-qt-unotice",
-                  "value": "Do What Thou Wilt"
+                  "value": "Be Excellent To One Another"
                 } ]
               }
             ],
-            "expiry": "2160h",
+            "expiry": "24h",
             "CSRWhitelist": {
               "PublicKeyAlgorithm": true,
               "PublicKey": true,
@@ -64,7 +64,7 @@
               "server auth",
               "client auth"
             ],
-            "backdate": "1h",
+            "backdate": "0s",
             "is_ca": false,
             "issuer_urls": [
               "http://127.0.0.1:4000/acme/issuer-cert"
@@ -82,11 +82,11 @@
                   "value": "http://example.com/cps"
                 }, {
                   "type": "id-qt-unotice",
-                  "value": "Do What Thou Wilt"
+                  "value": "Be Excellent to One Another"
                 } ]
               }
             ],
-            "expiry": "2160h",
+            "expiry": "24h",
             "CSRWhitelist": {
               "PublicKeyAlgorithm": true,
               "PublicKey": true,
@@ -100,7 +100,7 @@
           "usages": [
             "digital signature"
           ],
-          "expiry": "8760h"
+          "expiry": "24h"
         }
       }
     },

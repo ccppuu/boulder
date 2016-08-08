@@ -8,8 +8,8 @@
     "dbConnectFile": "test/secrets/mailer_dburl",
     "maxDBConns": 10,
     "messageLimit": 0,
-    "nagTimes": ["24h", "72h", "168h", "336h"],
-    "nagCheckInterval": "24h",
+    "nagTimes": ["2h", "12h", "24h"],
+    "nagCheckInterval": "12h",
     "emailTemplate": "test/example-expiration-template",
     "debugAddr": "localhost:8008",
     "amqp": {
