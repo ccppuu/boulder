@@ -8,8 +8,8 @@
     "dbConnectFile": "test/secrets/mailer_dburl",
     "maxDBConns": 10,
     "messageLimit": 0,
-    "nagTimes": ["2h", "12h", "24h"],
-    "nagCheckInterval": "12h",
+    "nagTimes": ["12h", "22h"],
+    "nagCheckInterval": "1h",
     "emailTemplate": "test/example-expiration-template",
     "debugAddr": "localhost:8008",
     "amqp": {
@@ -30,6 +30,6 @@
   "syslog": {
     "network": "",
     "server": "",
-    "stdoutlevel": 6
+    "stdoutlevel": 8
   }
 }
