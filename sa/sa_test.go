@@ -160,6 +160,7 @@ func TestCountPendingAuthorizations(t *testing.T) {
 }
 
 func TestAddAuthorization(t *testing.T) {
+	fmt.Printf("What. The. Fuck.\n")
 	sa, _, cleanUp := initSA(t)
 	defer cleanUp()
 
@@ -636,8 +637,8 @@ func TestRevokeAuthorizationsByDomain(t *testing.T) {
 	ident := core.AcmeIdentifier{Value: "a.com", Type: core.IdentifierDNS}
 	ar, par, err := sa.RevokeAuthorizationsByDomain(ctx, ident)
 	test.AssertNotError(t, err, "Failed to revoke authorizations for a.com")
-	test.AssertEquals(t, ar, int64(1))
-	test.AssertEquals(t, par, int64(1))
+	test.AssertEquals(t, ar, int64(2))
+	test.AssertEquals(t, par, int64(0))
 
 	PA, err := sa.GetAuthorization(ctx, PA1.ID)
 	test.AssertNotError(t, err, "Failed to retrieve pending authorization")
