@@ -12,21 +12,66 @@ import (
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/features"
 	"github.com/letsencrypt/boulder/probs"
+	"github.com/letsencrypt/boulder/revocation"
 )
 
+type dbSelectOne func(interface{}, string, ...interface{}) error
+
+func SelectRegistration(so dbSelectOne, q string, args ...interface{}) (*regModelv1, error) {
+	var model regModelv1
+	err := so(&model, "SELECT id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, LockCol FROM registrations "+q, args...)
+	return &model, err
+}
+
+func SelectRegistrationv2(so dbSelectOne, q string, args ...interface{}) (*regModelv2, error) {
+	var model regModelv2
+	err := so(&model, "SELECT id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, status, LockCol FROM registrations "+q, args...)
+	return &model, err
+}
+
+func SelectPendingAuthz(so dbSelectOne, q string, args ...interface{}) (*pendingauthzModel, error) {
+	var model pendingauthzModel
+	err := so(&model, "SELECT id, identifier, registrationID, status, expires, combinations, LockCol FROM pendingAuthorizations "+q, args...)
+	return &model, err
+}
+
+func SelectAuthz(so dbSelectOne, q string, args ...interface{}) (*authzModel, error) {
+	var model authzModel
+	err := so(&model, "SELECT id, identifier, registrationID, status, expires, combinations FROM authz "+q, args...)
+	return &model, err
+}
+
+func SelectSctReceipt(so dbSelectOne, q string, args ...interface{}) (core.SignedCertificateTimestamp, error) {
+	var model core.SignedCertificateTimestamp
+	err := so(&model, "SELECT id, sctVersion, logID, timestamp, extensions, signature, certificateSerial, LockCol FROM sctReceipts "+q, args...)
+	return model, err
+}
+
+func SelectCertificate(so dbSelectOne, q string, args ...interface{}) (core.Certificate, error) {
+	var model core.Certificate
+	err := so(&model, "SELECT registrationID, serial, digest, der, issued, expires FROM certificates "+q, args...)
+	return model, err
+}
+
+func SelectCertificateStatus(so dbSelectOne, q string, args ...interface{}) (certStatusModelv1, error) {
+	var model certStatusModelv1
+	err := so(&model, "SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol FROM certificateStatus "+q, args...)
+	return model, err
+}
+
+func SelectCertificateStatusv2(so dbSelectOne, q string, args ...interface{}) (certStatusModelv2, error) {
+	var model certStatusModelv2
+	err := so(&model, "SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, notAfter, isExpired, LockCol FROM certificateStatus "+q, args...)
+	return model, err
+}
+
 const (
-	regV1Fields        string = "id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, LockCol"
-	regV2Fields        string = regV1Fields + ", status"
-	pendingAuthzFields string = "id, identifier, registrationID, status, expires, combinations, LockCol"
-	authzFields        string = "id, identifier, registrationID, status, expires, combinations"
-	sctFields          string = "id, sctVersion, logID, timestamp, extensions, signature, certificateSerial, LockCol"
+	authzFields string = "id, identifier, registrationID, status, expires, combinations"
 
-	// CertificateFields and CertificateStatusFields are also used by cert-checker and ocsp-updater
-	CertificateFields       string = "registrationID, serial, digest, der, issued, expires"
-	CertificateStatusFields string = "serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol"
+	// CertificateFields are used by cert-checker
+	CertificateFields string = "registrationID, serial, digest, der, issued, expires"
 
-	// CertificateStatusFieldsv2 is used when the CertStatusOptimizationsMigrated
-	// feature flag is enabled and includes "notAfter" and "isExpired" fields
+	CertificateStatusFields   string = "serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol"
 	CertificateStatusFieldsv2 string = CertificateStatusFields + ", notAfter, isExpired"
 )
 
@@ -59,6 +104,30 @@ type regModelv1 struct {
 type regModelv2 struct {
 	regModelv1
 	Status string `db:"status"`
+}
+
+// We need two certStatus model structs, one for when boulder does *not* have
+// the 20160817143417_CertStatusOptimizations.sql migration applied
+// (certStatusModelv1) and one for when it does (certStatusModelv2)
+//
+// TODO(@cpu): Collapse into one struct once the migration has been applied
+//             & feature flag set.
+type certStatusModelv1 struct {
+	Serial                string            `db:"serial"`
+	SubscriberApproved    bool              `db:"subscriberApproved"`
+	Status                core.OCSPStatus   `db:"status"`
+	OCSPLastUpdated       time.Time         `db:"ocspLastUpdated"`
+	RevokedDate           time.Time         `db:"revokedDate"`
+	RevokedReason         revocation.Reason `db:"revokedReason"`
+	LastExpirationNagSent time.Time         `db:"lastExpirationNagSent"`
+	OCSPResponse          []byte            `db:"ocspResponse"`
+	LockCol               int64             `json:"-"`
+}
+
+type certStatusModelv2 struct {
+	certStatusModelv1
+	NotAfter  time.Time `db:"notAfter"`
+	IsExpired bool      `db:"isExpired"`
 }
 
 // challModel is the description of a core.Challenge in the database
