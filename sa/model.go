@@ -18,27 +18,46 @@ import (
 type dbSelectOne func(interface{}, string, ...interface{}) error
 type dbSelect func(interface{}, string, ...interface{}) ([]interface{}, error)
 
+const regFields = "id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, LockCol"
+const regFieldsv2 = regFields + ", status"
+
 func SelectRegistration(so dbSelectOne, q string, args ...interface{}) (*regModelv1, error) {
 	var model regModelv1
-	err := so(&model, "SELECT id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, LockCol FROM registrations "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+regFields+" FROM registrations "+q,
+		args...,
+	)
 	return &model, err
 }
 
 func SelectRegistrationv2(so dbSelectOne, q string, args ...interface{}) (*regModelv2, error) {
 	var model regModelv2
-	err := so(&model, "SELECT id, jwk, jwk_sha256, contact, agreement, initialIP, createdAt, status, LockCol FROM registrations "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+regFieldsv2+" FROM registrations "+q, args...)
 	return &model, err
 }
 
 func SelectPendingAuthz(so dbSelectOne, q string, args ...interface{}) (*pendingauthzModel, error) {
 	var model pendingauthzModel
-	err := so(&model, "SELECT id, identifier, registrationID, status, expires, combinations, LockCol FROM pendingAuthorizations "+q, args...)
+	err := so(
+		&model,
+		"SELECT id, identifier, registrationID, status, expires, combinations, LockCol FROM pendingAuthorizations "+q,
+		args...,
+	)
 	return &model, err
 }
 
+const authzFields = "id, identifier, registrationID, status, expires, combinations"
+
 func SelectAuthz(so dbSelectOne, q string, args ...interface{}) (*authzModel, error) {
 	var model authzModel
-	err := so(&model, "SELECT id, identifier, registrationID, status, expires, combinations FROM authz "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+authzFields+" FROM authz "+q,
+		args...,
+	)
 	return &model, err
 }
 
@@ -46,20 +65,31 @@ func SelectAuthzs(s dbSelect, q string, args ...interface{}) ([]*core.Authorizat
 	var models []*core.Authorization
 	_, err := s(
 		&models,
-		"SELECT id, identifier, registrationID, status, expires, combinations FROM authz "+q,
-		args...)
+		"SELECT "+authzFields+" FROM authz "+q,
+		args...,
+	)
 	return models, err
 }
 
 func SelectSctReceipt(so dbSelectOne, q string, args ...interface{}) (core.SignedCertificateTimestamp, error) {
 	var model core.SignedCertificateTimestamp
-	err := so(&model, "SELECT id, sctVersion, logID, timestamp, extensions, signature, certificateSerial, LockCol FROM sctReceipts "+q, args...)
+	err := so(
+		&model,
+		"SELECT id, sctVersion, logID, timestamp, extensions, signature, certificateSerial, LockCol FROM sctReceipts "+q,
+		args...,
+	)
 	return model, err
 }
 
+const certFields = "registrationID, serial, digest, der, issued, expires"
+
 func SelectCertificate(so dbSelectOne, q string, args ...interface{}) (core.Certificate, error) {
 	var model core.Certificate
-	err := so(&model, "SELECT registrationID, serial, digest, der, issued, expires FROM certificates "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+certFields+" FROM certificates "+q,
+		args...,
+	)
 	return model, err
 }
 
@@ -67,19 +97,30 @@ func SelectCertificates(s dbSelect, q string, args map[string]interface{}) ([]co
 	var models []core.Certificate
 	_, err := s(
 		&models,
-		"SELECT registrationID, serial, digest, der, issued, expires FROM certificates "+q, args)
+		"SELECT "+certFields+" FROM certificates "+q, args)
 	return models, err
 }
 
+const certStatusFields = "serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol"
+const certStatusFieldsv2 = certStatusFields + ", notAfter, isExpired"
+
 func SelectCertificateStatus(so dbSelectOne, q string, args ...interface{}) (certStatusModelv1, error) {
 	var model certStatusModelv1
-	err := so(&model, "SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol FROM certificateStatus "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+certStatusFields+" FROM certificateStatus "+q,
+		args...,
+	)
 	return model, err
 }
 
 func SelectCertificateStatusv2(so dbSelectOne, q string, args ...interface{}) (certStatusModelv2, error) {
 	var model certStatusModelv2
-	err := so(&model, "SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, notAfter, isExpired, LockCol FROM certificateStatus "+q, args...)
+	err := so(
+		&model,
+		"SELECT "+certStatusFieldsv2+" FROM certificateStatus "+q,
+		args...,
+	)
 	return model, err
 }
 
@@ -87,7 +128,7 @@ func SelectCertificateStatuses(s dbSelect, q string, args ...interface{}) ([]cor
 	var models []core.CertificateStatus
 	_, err := s(
 		&models,
-		"SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol FROM certificateStatus "+q,
+		"SELECT "+certStatusFields+" FROM certificateStatus "+q,
 		args...,
 	)
 	return models, err
@@ -97,7 +138,7 @@ func SelectCertificateStatusesv2(s dbSelect, q string, args ...interface{}) ([]c
 	var models []core.CertificateStatus
 	_, err := s(
 		&models,
-		"SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, notAfter, isExpired, LockCol FROM certificateStatus "+q,
+		"SELECT "+certStatusFieldsv2+" FROM certificateStatus "+q,
 		args...,
 	)
 	return models, err
