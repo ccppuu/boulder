@@ -143,7 +143,7 @@ func (ssa *SQLStorageAuthority) GetRegistrationByKey(ctx context.Context, key jo
 	if features.Enabled(features.AllowAccountDeactivation) {
 		model, err = SelectRegistrationv2(ssa.dbMap.SelectOne, query, sha)
 	} else {
-		model, err = SelectRegistrationv2(ssa.dbMap.SelectOne, query, sha)
+		model, err = SelectRegistration(ssa.dbMap.SelectOne, query, sha)
 	}
 	if err == sql.ErrNoRows {
 		msg := fmt.Sprintf("No registrations with public key sha256 %s", sha)
@@ -230,18 +230,12 @@ func (ssa *SQLStorageAuthority) GetValidAuthorizations(ctx context.Context, regi
 		qmarks[i] = "?"
 	}
 
-	var auths []*core.Authorization
-	_, err = ssa.dbMap.Select(
-		&auths,
-		fmt.Sprintf(`
-		SELECT %s FROM authz
-		WHERE registrationID = ?
-		AND expires > ?
-		AND identifier IN (`+strings.Join(qmarks, ",")+`)
-		AND status = 'valid'
-		`, authzFields),
-		append([]interface{}{registrationID, now}, params...)...,
-	)
+	auths, err := SelectAuthzs(ssa.dbMap.Select,
+		"WHERE registrationID = ? "+
+			"AND expires > ? "+
+			"AND identifier IN ("+strings.Join(qmarks, ",")+") "+
+			"AND status = 'valid'",
+		append([]interface{}{registrationID, now}, params...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -532,22 +526,21 @@ func (ssa *SQLStorageAuthority) MarkCertificateRevoked(ctx context.Context, seri
 		return err
 	}
 
+	var n int64
 	now := ssa.clk.Now()
 	if features.Enabled(features.CertStatusOptimizationsMigrated) {
-		status := statusObj.(*certStatusModelv2)
+		status := statusObj.(certStatusModelv2)
 		status.Status = core.OCSPStatusRevoked
 		status.RevokedDate = now
 		status.RevokedReason = reasonCode
-		statusObj = status
+		n, err = tx.Update(&status)
 	} else {
-		status := statusObj.(*certStatusModelv1)
+		status := statusObj.(certStatusModelv1)
 		status.Status = core.OCSPStatusRevoked
 		status.RevokedDate = now
 		status.RevokedReason = reasonCode
-		statusObj = status
+		n, err = tx.Update(&status)
 	}
-
-	n, err := tx.Update(statusObj)
 	if err != nil {
 		err = Rollback(tx, err)
 		return err

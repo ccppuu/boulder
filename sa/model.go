@@ -16,6 +16,7 @@ import (
 )
 
 type dbSelectOne func(interface{}, string, ...interface{}) error
+type dbSelect func(interface{}, string, ...interface{}) ([]interface{}, error)
 
 func SelectRegistration(so dbSelectOne, q string, args ...interface{}) (*regModelv1, error) {
 	var model regModelv1
@@ -41,6 +42,15 @@ func SelectAuthz(so dbSelectOne, q string, args ...interface{}) (*authzModel, er
 	return &model, err
 }
 
+func SelectAuthzs(s dbSelect, q string, args ...interface{}) ([]*core.Authorization, error) {
+	var models []*core.Authorization
+	_, err := s(
+		&models,
+		"SELECT id, identifier, registrationID, status, expires, combinations FROM authz "+q,
+		args...)
+	return models, err
+}
+
 func SelectSctReceipt(so dbSelectOne, q string, args ...interface{}) (core.SignedCertificateTimestamp, error) {
 	var model core.SignedCertificateTimestamp
 	err := so(&model, "SELECT id, sctVersion, logID, timestamp, extensions, signature, certificateSerial, LockCol FROM sctReceipts "+q, args...)
@@ -51,6 +61,14 @@ func SelectCertificate(so dbSelectOne, q string, args ...interface{}) (core.Cert
 	var model core.Certificate
 	err := so(&model, "SELECT registrationID, serial, digest, der, issued, expires FROM certificates "+q, args...)
 	return model, err
+}
+
+func SelectCertificates(s dbSelect, q string, args map[string]interface{}) ([]core.Certificate, error) {
+	var models []core.Certificate
+	_, err := s(
+		&models,
+		"SELECT registrationID, serial, digest, der, issued, expires FROM certificates "+q, args)
+	return models, err
 }
 
 func SelectCertificateStatus(so dbSelectOne, q string, args ...interface{}) (certStatusModelv1, error) {
@@ -65,15 +83,25 @@ func SelectCertificateStatusv2(so dbSelectOne, q string, args ...interface{}) (c
 	return model, err
 }
 
-const (
-	authzFields string = "id, identifier, registrationID, status, expires, combinations"
+func SelectCertificateStatuses(s dbSelect, q string, args ...interface{}) ([]core.CertificateStatus, error) {
+	var models []core.CertificateStatus
+	_, err := s(
+		&models,
+		"SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol FROM certificateStatus "+q,
+		args...,
+	)
+	return models, err
+}
 
-	// CertificateFields are used by cert-checker
-	CertificateFields string = "registrationID, serial, digest, der, issued, expires"
-
-	CertificateStatusFields   string = "serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, LockCol"
-	CertificateStatusFieldsv2 string = CertificateStatusFields + ", notAfter, isExpired"
-)
+func SelectCertificateStatusesv2(s dbSelect, q string, args ...interface{}) ([]core.CertificateStatus, error) {
+	var models []core.CertificateStatus
+	_, err := s(
+		&models,
+		"SELECT serial, subscriberApproved, status, ocspLastUpdated, revokedDate, revokedReason, lastExpirationNagSent, ocspResponse, notAfter, isExpired, LockCol FROM certificateStatus "+q,
+		args...,
+	)
+	return models, err
+}
 
 var mediumBlobSize = int(math.Pow(2, 24))
 
