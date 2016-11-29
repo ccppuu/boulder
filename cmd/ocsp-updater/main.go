@@ -507,6 +507,7 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 			updater.log.AuditErr(fmt.Sprintf("Failed to get certificate: %s", err))
 			continue
 		}
+		updater.log.AuditErr(fmt.Sprintf("calling SubmitToCT() for %#v\n\n", serial))
 		_ = updater.pubc.SubmitToCT(ctx, cert.DER)
 	}
 	return nil
