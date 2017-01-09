@@ -89,8 +89,9 @@ func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig) va.SafeBrowsing 
 		cmd.FailOnError(err, "unable to create new safe browsing v4 client")
 	}
 	sb, err := safebrowsingv4.NewSafeBrowser(safebrowsingv4.Config{
-		APIKey: gsb.APIKey,
-		DBPath: gsb.DataDir,
+		APIKey:    gsb.APIKey,
+		DBPath:    gsb.DataDir,
+		ServerURL: gsb.ServerURL,
 	})
 	if err != nil {
 		cmd.FailOnError(err, "unable to create new safe browsing v4 client")
