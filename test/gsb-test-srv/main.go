@@ -206,13 +206,44 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 	threat := te[0]
 	fmt.Printf("ThreatEntries[0]: %#v\n", threat)
 
-	match := t.hp.findByHash(string(threat.Hash))
-	if match == nil {
-		fmt.Printf("Didn't find %#v\n", threat.Hash)
-		return
+	var match *hashPrefix
+	if threat.Url != "" {
+		match = t.hp.findByURL(string(threat.Url))
+	} else {
+		match = t.hp.findByHash(string(threat.Hash))
 	}
 
-	fmt.Printf("Domain %s matched threat hash %#v\n", match.url, match.hash)
+	resp := &gsb_proto.FindFullHashesResponse{
+		MinimumWaitDuration: &gsb_proto.Duration{
+			Seconds: 1,
+		},
+		NegativeCacheDuration: &gsb_proto.Duration{
+			Seconds: 1,
+		},
+	}
+
+	if match == nil {
+		fmt.Printf("Didn't find %#v\n", threat.Hash)
+	} else {
+		resp.Matches = []*gsb_proto.ThreatMatch{
+			&gsb_proto.ThreatMatch{
+				ThreatType: gsb_proto.ThreatType_MALWARE,
+				Threat: &gsb_proto.ThreatEntry{
+					Hash: []byte(match.hash),
+					Url:  match.url,
+				},
+				CacheDuration: &gsb_proto.Duration{
+					Seconds: 1,
+				},
+			},
+		}
+	}
+
+	err = marshal(w, resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func (t *testSrv) processRequest(w http.ResponseWriter, r *http.Request) {
@@ -266,7 +297,6 @@ func (t *testSrv) start(listenAddr string) {
 func newTestServer(apiKey string, unsafeURLs []string) testSrv {
 	ts := testSrv{
 		apiKey: apiKey,
-		//unsafeURLs: []string{"evil.com/", "puppy.zone/"},
 	}
 
 	var hp hashPrefixes
@@ -285,7 +315,7 @@ func newTestServer(apiKey string, unsafeURLs []string) testSrv {
 
 func main() {
 	key := flag.String("apikey", "", "API key for client access")
-	listen := flag.String("listenAddress", "0.0.0.0:6000", "Listen address for HTTP server")
+	listen := flag.String("listenAddress", ":6000", "Listen address for HTTP server")
 
 	flag.Parse()
 
@@ -294,7 +324,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	ts := newTestServer(*key, []string{"evil.com", "puppy.zone"})
+	fmt.Printf("Starting GSB Test Server on %q\n", *listen)
+
+	ts := newTestServer(*key, []string{"evil.com", "malware.biz"})
 	ts.start(*listen)
 
 	// Block on an empty channel

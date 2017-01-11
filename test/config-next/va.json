@@ -30,7 +30,7 @@
     "GoogleSafeBrowsing": {
       "APIKey": "foo",
       "DataDir": "/tmp",
-      "ServerURL": "http://172.17.0.1:6000"
+      "ServerURL": "http://boulder:6000"
     },
     "features": {
       "GoogleSafeBrowsingV4": true

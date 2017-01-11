@@ -56,7 +56,8 @@ def start(race_detection):
         'ocsp-responder --config %s' % os.path.join(default_config_dir, "ocsp-responder.json"),
         'ct-test-srv',
         'dns-test-srv',
-        'mail-test-srv --closeFirst 5'
+        'mail-test-srv --closeFirst 5',
+        'gsb-test-srv -apikey foo'
     ]
     if not install(race_detection):
         return False
