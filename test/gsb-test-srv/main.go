@@ -28,6 +28,7 @@ const (
 // An empty threat list update response for padding responses out
 var emptyThreatListUpdateResp = &gsb_proto.FetchThreatListUpdatesResponse_ListUpdateResponse{
 	ThreatType:      gsb_proto.ThreatType_MALWARE,
+	PlatformType:    gsb_proto.PlatformType_ANY_PLATFORM,
 	ThreatEntryType: gsb_proto.ThreatEntryType_URL,
 	ResponseType:    gsb_proto.FetchThreatListUpdatesResponse_ListUpdateResponse_FULL_UPDATE,
 	/*
@@ -129,6 +130,7 @@ func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
 	// A response to add some bad URLs
 	addResponse := &gsb_proto.FetchThreatListUpdatesResponse_ListUpdateResponse{
 		ThreatType:      gsb_proto.ThreatType_MALWARE,
+		PlatformType:    gsb_proto.PlatformType_ANY_PLATFORM,
 		ThreatEntryType: gsb_proto.ThreatEntryType_URL,
 		ResponseType:    gsb_proto.FetchThreatListUpdatesResponse_ListUpdateResponse_FULL_UPDATE,
 		Additions: []*gsb_proto.ThreatEntrySet{
@@ -227,7 +229,9 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp.Matches = []*gsb_proto.ThreatMatch{
 			&gsb_proto.ThreatMatch{
-				ThreatType: gsb_proto.ThreatType_MALWARE,
+				ThreatType:      gsb_proto.ThreatType_MALWARE,
+				PlatformType:    gsb_proto.PlatformType_ANY_PLATFORM,
+				ThreatEntryType: gsb_proto.ThreatEntryType_URL,
 				Threat: &gsb_proto.ThreatEntry{
 					Hash: []byte(match.hash),
 					Url:  match.url,
