@@ -4,12 +4,21 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 
 	safebrowsingv4 "github.com/google/safebrowsing"
 	"github.com/letsencrypt/boulder/cmd"
 	"github.com/letsencrypt/boulder/va"
 	safebrowsing "github.com/letsencrypt/go-safe-browsing-api"
+)
+
+const (
+	// Filename used for the v4 safebrowsing client's local database in the
+	// configured GSB data directory. The file contents are a gzipped GOB encoding
+	// of the client's in-memory cache.g
+	v4DbFilename = "safebrowsing.v4.cache.bin"
 )
 
 var (
@@ -64,12 +73,12 @@ func (sb gsbAdapter) IsListed(url string) (string, error) {
 	if err != nil {
 		return "error", err
 	}
-	if len(threats) > 0 {
+	if len(threats) > 0 && threats[0] != nil {
 		// NOTE: We only return the _first_ URL threat's first ThreatType here. It's
 		// possible a URL could return multiple threat's with distinct ThreatTypes,
 		// but the va.SafeBrowser interface only returns 1 string that is compared
 		// against "" to make a "safe or not" decision. We do not need more
-		// granularity.
+
 		if len(threats[0]) == 0 {
 			return "error", EmptyURLThreatErr
 		}
@@ -88,10 +97,21 @@ func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig) va.SafeBrowsing 
 	if err := configCheck(gsb); err != nil {
 		cmd.FailOnError(err, "unable to create new safe browsing v4 client")
 	}
+
+	// Create the DB file if it doesn't exist
+	dbFile := filepath.Join(gsb.DataDir, v4DbFilename)
+	dbFileHandle, err := os.Create(dbFile)
+	if err != nil {
+		cmd.FailOnError(err, fmt.Sprintf(
+			"unable to create safe browsing v4 db file %q", dbFile))
+	}
+	dbFileHandle.Close()
+
 	sb, err := safebrowsingv4.NewSafeBrowser(safebrowsingv4.Config{
 		APIKey:    gsb.APIKey,
-		DBPath:    gsb.DataDir,
+		DBPath:    dbFile,
 		ServerURL: gsb.ServerURL,
+		Logger:    os.Stdout,
 	})
 	if err != nil {
 		cmd.FailOnError(err, "unable to create new safe browsing v4 client")
