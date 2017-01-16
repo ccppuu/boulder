@@ -46,6 +46,7 @@ def start(race_detection):
     global processes
     forward()
     progs = [
+        'gsb-test-srv -apikey foo',
         'boulder-sa --config %s' % os.path.join(default_config_dir, "sa.json"),
         'boulder-wfe --config %s' % os.path.join(default_config_dir, "wfe.json"),
         'boulder-ra --config %s' % os.path.join(default_config_dir, "ra.json"),
@@ -56,8 +57,7 @@ def start(race_detection):
         'ocsp-responder --config %s' % os.path.join(default_config_dir, "ocsp-responder.json"),
         'ct-test-srv',
         'dns-test-srv',
-        'mail-test-srv --closeFirst 5',
-        'gsb-test-srv -apikey foo'
+        'mail-test-srv --closeFirst 5'
     ]
     if not install(race_detection):
         return False
