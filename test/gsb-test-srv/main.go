@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -17,6 +18,7 @@ import (
 type testSrv struct {
 	apiKey string
 	hp     hashPrefixes
+	hits   map[string]int
 }
 
 const (
@@ -233,6 +235,12 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 		}
+		if _, found := t.hits[match.url]; !found {
+			t.hits[match.url] = 1
+		} else {
+			t.hits[match.url] = t.hits[match.url] + 1
+		}
+		fmt.Printf("[!] Hit for %q. Count: %d\n", match.url, t.hits[match.url])
 	}
 
 	err = marshal(w, resp)
@@ -243,45 +251,56 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("[+] Processed fullHashesFind for client\n")
 }
 
-func (t *testSrv) processRequest(w http.ResponseWriter, r *http.Request) {
-	// We only process POST methods
-	if r.Method != "POST" {
-		w.WriteHeader(405)
-		return
-	}
-	// And only for specific paths
-	if r.URL.Path != "/v4/threatListUpdates:fetch" && r.URL.Path != "/v4/fullHashes:find" {
-	}
-	// And only for protobuf Content-Type
-	if r.Header.Get("Content-Type") != protoMime {
-		w.WriteHeader(405)
-		return
-	}
-	// We require the client sends the correct key
-	// TODO(@cpu): Send back a protocol-correct bad auth response
-	key := r.URL.Query().Get("key")
-	if key != t.apiKey {
-		w.WriteHeader(405)
+func (t *testSrv) getHits(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
-	switch r.URL.Path {
-	case "/v4/threatListUpdates:fetch":
-		t.threatListUpdateFetch(w, r)
-		return
-	case "/v4/fullHashes:find":
-		t.fullHashesFind(w, r)
+	w.Header().Set("Content-Type", "application/json")
+	body, err := json.Marshal(t.hits)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if _, err := w.Write(body); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("[+] Processed /hits request for client\n")
+}
 
-	http.NotFound(w, r)
-	return
+func (t *testSrv) gsbHandler(inner http.HandlerFunc) http.HandlerFunc { //w *http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The HTTP method must be POST
+		if r.Method != "POST" {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		// The Content-Type must be the protocol buffers mime type
+		if r.Header.Get("Content-Type") != protoMime {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// There must be a "key" URL parameter with the correct API key
+		// TODO(@cpu): Send back a protocol-correct bad auth response
+		key := r.URL.Query().Get("key")
+		if key != t.apiKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		inner(w, r)
+	})
 }
 
 func (t *testSrv) start(listenAddr string) {
-	handler := http.HandlerFunc(t.processRequest)
+	mux := http.NewServeMux()
+	mux.Handle("/v4/threatListUpdates:fetch", t.gsbHandler(t.threatListUpdateFetch))
+	mux.Handle("/v4/fullHashes:find", t.gsbHandler(t.fullHashesFind))
+	mux.Handle("/hits", http.HandlerFunc(t.getHits))
+
 	go func() {
-		err := http.ListenAndServe(listenAddr, handler)
+		err := http.ListenAndServe(listenAddr, mux)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 			return
@@ -292,6 +311,7 @@ func (t *testSrv) start(listenAddr string) {
 func newTestServer(apiKey string, unsafeURLs []string) testSrv {
 	ts := testSrv{
 		apiKey: apiKey,
+		hits:   make(map[string]int),
 	}
 
 	var hp hashPrefixes
