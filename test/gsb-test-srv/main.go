@@ -20,9 +20,7 @@ type testSrv struct {
 }
 
 const (
-	protoMime           = "application/x-protobuf"
-	minHashPrefixLength = 4
-	maxHashPrefixLength = sha256.Size
+	protoMime = "application/x-protobuf"
 )
 
 // An empty threat list update response for padding responses out
@@ -82,7 +80,7 @@ func newHashPrefix(pattern string) hashPrefix {
 
 type hashPrefixes []hashPrefix
 
-func (p hashPrefixes) SHA256() []byte {
+func (p hashPrefixes) sha256() []byte {
 	hash := sha256.New()
 	for _, hp := range p {
 		hash.Write([]byte(hp.hash))
@@ -127,7 +125,6 @@ func (p hashPrefixes) findByHash(h string) *hashPrefix {
 func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
 	updateResp := &gsb_proto.FetchThreatListUpdatesResponse{}
 
-	// A response to add some bad URLs
 	addResponse := &gsb_proto.FetchThreatListUpdatesResponse_ListUpdateResponse{
 		ThreatType:      gsb_proto.ThreatType_MALWARE,
 		PlatformType:    gsb_proto.PlatformType_ANY_PLATFORM,
@@ -142,7 +139,7 @@ func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
 		&gsb_proto.ThreatEntrySet{
 			CompressionType: gsb_proto.CompressionType_RAW,
 			RawHashes: &gsb_proto.RawHashes{
-				PrefixSize: maxHashPrefixLength,
+				PrefixSize: sha256.Size,
 			},
 		},
 	}
@@ -150,7 +147,7 @@ func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
 	hashes := t.hp.bytes()
 	additions[0].RawHashes.RawHashes = hashes
 	addResponse.Additions = additions
-	addResponse.Checksum = &gsb_proto.Checksum{Sha256: t.hp.SHA256()}
+	addResponse.Checksum = &gsb_proto.Checksum{Sha256: t.hp.sha256()}
 
 	// The `sblookup` client is hardcoded to expect exactly three list update
 	// responses, one for each of the threat types it cares about.
@@ -175,7 +172,6 @@ func (t *testSrv) threatListUpdateFetch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	updateResp := t.dbUpdateResponse()
-	fmt.Printf("Sending resp: %#v\n", updateResp)
 
 	err = marshal(w, updateResp)
 	if err != nil {
@@ -183,7 +179,7 @@ func (t *testSrv) threatListUpdateFetch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	fmt.Printf("processed: %#v\n", updateReq)
+	fmt.Printf("[+] Processed threatListUpdateFetch for client\n")
 }
 
 func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
@@ -204,13 +200,11 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-
 	threat := te[0]
-	fmt.Printf("ThreatEntries[0]: %#v\n", threat)
 
 	var match *hashPrefix
 	if threat.Url != "" {
-		match = t.hp.findByURL(string(threat.Url))
+		match = t.hp.findByURL(threat.Url)
 	} else {
 		match = t.hp.findByHash(string(threat.Hash))
 	}
@@ -224,9 +218,7 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if match == nil {
-		fmt.Printf("Didn't find %#v\n", threat.Hash)
-	} else {
+	if match != nil {
 		resp.Matches = []*gsb_proto.ThreatMatch{
 			&gsb_proto.ThreatMatch{
 				ThreatType:      gsb_proto.ThreatType_MALWARE,
@@ -248,11 +240,10 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	fmt.Printf("[+] Processed fullHashesFind for client\n")
 }
 
 func (t *testSrv) processRequest(w http.ResponseWriter, r *http.Request) {
-	fmt.Printf("processRequesT() Path: %#v\n", r.URL.Path)
-
 	// We only process POST methods
 	if r.Method != "POST" {
 		w.WriteHeader(405)
@@ -328,8 +319,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting GSB Test Server on %q\n", *listen)
-
+	fmt.Printf("[+] Starting GSB Test Server on %q\n", *listen)
 	ts := newTestServer(*key, []string{"evil.com", "malware.biz"})
 	ts.start(*listen)
 
