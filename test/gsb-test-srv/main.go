@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/golang/protobuf/proto"
 	gsb_proto "github.com/letsencrypt/boulder/test/gsb-test-srv/proto"
@@ -19,6 +20,7 @@ type testSrv struct {
 	apiKey string
 	hp     hashPrefixes
 	hits   map[string]int
+	mu     *sync.RWMutex
 }
 
 const (
@@ -146,6 +148,10 @@ func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
 		},
 	}
 
+	// Lock the mutex for reading
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
 	hashes := t.hp.bytes()
 	additions[0].RawHashes.RawHashes = hashes
 	addResponse.Additions = additions
@@ -204,12 +210,16 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 	}
 	threat := te[0]
 
+	// Lock mutex for reading
+	t.mu.RLock()
 	var match *hashPrefix
 	if threat.Url != "" {
 		match = t.hp.findByURL(threat.Url)
 	} else {
 		match = t.hp.findByHash(string(threat.Hash))
 	}
+	// Restore read lock immediately
+	t.mu.RUnlock()
 
 	resp := &gsb_proto.FindFullHashesResponse{
 		MinimumWaitDuration: &gsb_proto.Duration{
@@ -235,6 +245,9 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 		}
+		// Lock the mutex for writing
+		t.mu.Lock()
+		defer t.mu.Unlock()
 		if _, found := t.hits[match.url]; !found {
 			t.hits[match.url] = 1
 		} else {
@@ -256,6 +269,10 @@ func (t *testSrv) getHits(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+
+	// Lock the mutex for reading
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	body, err := json.Marshal(t.hits)
@@ -312,6 +329,7 @@ func newTestServer(apiKey string, unsafeURLs []string) testSrv {
 	ts := testSrv{
 		apiKey: apiKey,
 		hits:   make(map[string]int),
+		mu:     new(sync.RWMutex),
 	}
 
 	var hp hashPrefixes
