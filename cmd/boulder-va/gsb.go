@@ -10,6 +10,7 @@ import (
 
 	safebrowsingv4 "github.com/google/safebrowsing"
 	"github.com/letsencrypt/boulder/cmd"
+	blog "github.com/letsencrypt/boulder/log"
 	"github.com/letsencrypt/boulder/va"
 	safebrowsing "github.com/letsencrypt/go-safe-browsing-api"
 )
@@ -65,6 +66,18 @@ type gsbAdapter struct {
 	va.SafeBrowsingV4
 }
 
+// gsbLogAdapter adapts a blog.Logger to the io.Writer interface used by the
+// Google safebrowsing client for a logger. All messages written to the Writer
+// by the library will be adapter to the logger's Info method.
+type gsbLogAdapter struct {
+	log blog.Logger
+}
+
+func (a gsbLogAdapter) Write(b []byte) (int, error) {
+	a.log.Info(string(b))
+	return len(b), nil
+}
+
 // IsListed provides the va.SafeBrowsing interface by using the
 // `safebrowsing4v.SafeBrowser` to look up one URL and return the first threat
 // list it is found on, or "" if the URL is safe.
@@ -89,7 +102,7 @@ func (sb gsbAdapter) IsListed(url string) (string, error) {
 
 // newGoogleSafeBrowsingV4 constructs a va.SafeBrowsing instance using the new
 // Google upstream Safe Browsing version 4 client.
-func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig) va.SafeBrowsing {
+func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig, logger blog.Logger) va.SafeBrowsing {
 	// If there is no GSB configuration, don't create a client
 	if gsb == nil {
 		return nil
@@ -111,7 +124,7 @@ func newGoogleSafeBrowsingV4(gsb *cmd.GoogleSafeBrowsingConfig) va.SafeBrowsing 
 		APIKey:    gsb.APIKey,
 		DBPath:    dbFile,
 		ServerURL: gsb.ServerURL,
-		Logger:    os.Stdout,
+		Logger:    gsbLogAdapter{logger},
 	})
 	if err != nil {
 		cmd.FailOnError(err, "unable to create new safe browsing v4 client")
