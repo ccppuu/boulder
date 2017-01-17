@@ -108,23 +108,19 @@ func (p hashPrefixes) Swap(i, j int)      { p[i], p[j] = p[j], p[i] }
 func (p hashPrefixes) sort() { sort.Sort(p) }
 
 func (p hashPrefixes) searchWith(f func(int) bool) *hashPrefix {
-	i := sort.Search(len(p), f)
-	if i < len(p) {
-		return &p[i]
-	}
 	return nil
 }
 
-func (p hashPrefixes) findByURL(url string) *hashPrefix {
-	return p.searchWith(func(i int) bool {
-		return p[i].url >= url
-	})
-}
-
 func (p hashPrefixes) findByHash(h string) *hashPrefix {
-	return p.searchWith(func(i int) bool {
+	i := sort.Search(len(p), func(i int) bool {
 		return p[i].hash >= h
 	})
+
+	if i < len(p) && p[i].hash == h {
+		return &p[i]
+	}
+
+	return nil
 }
 
 func (t *testSrv) dbUpdateResponse() *gsb_proto.FetchThreatListUpdatesResponse {
@@ -184,7 +180,7 @@ func (t *testSrv) threatListUpdateFetch(w http.ResponseWriter, r *http.Request) 
 
 	err = marshal(w, updateResp)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -214,11 +210,8 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 	// Lock mutex for reading
 	t.mu.RLock()
 	var match *hashPrefix
-	if threat.Url != "" {
-		match = t.hp.findByURL(threat.Url)
-	} else {
-		match = t.hp.findByHash(string(threat.Hash))
-	}
+	match = t.hp.findByHash(string(threat.Hash))
+
 	// Restore read lock immediately
 	t.mu.RUnlock()
 
@@ -263,6 +256,47 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("Processed fullHashesFind for client\n")
+}
+
+func (t *testSrv) addSite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Request method must be POST", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	urlData := &struct {
+		Url string
+	}{}
+	if err := json.Unmarshal(body, urlData); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if !strings.HasSuffix(urlData.Url, "/") {
+		urlData.Url += "/"
+	}
+
+	newHp := newHashPrefix(urlData.Url)
+	match := t.hp.findByHash(newHp.hash)
+	if match != nil {
+		log.Printf("Skipped adding %q - Already on the list\n", newHp.url)
+		return
+	}
+
+	// Lock the mutex for writing
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Add the new hash prefix and resort the list
+	t.hp = append(t.hp, newHp)
+	t.hp.sort()
+	log.Printf("Added %q to safe browsing list\n", urlData.Url)
 }
 
 func (t *testSrv) getHits(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +350,7 @@ func (t *testSrv) start(listenAddr string) {
 	mux.Handle("/v4/threatListUpdates:fetch", t.gsbHandler(t.threatListUpdateFetch))
 	mux.Handle("/v4/fullHashes:find", t.gsbHandler(t.fullHashesFind))
 	mux.Handle("/hits", http.HandlerFunc(t.getHits))
+	mux.Handle("/add", http.HandlerFunc(t.addSite))
 
 	go func() {
 		err := http.ListenAndServe(listenAddr, mux)
@@ -336,7 +371,7 @@ func newTestServer(apiKey string, unsafeURLs []string) testSrv {
 	var hp hashPrefixes
 	for _, s := range unsafeURLs {
 		if !strings.HasSuffix(s, "/") {
-			s = s + "/"
+			s += "/"
 		}
 
 		hp = append(hp, newHashPrefix(s))
