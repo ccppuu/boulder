@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -187,7 +188,7 @@ func (t *testSrv) threatListUpdateFetch(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	fmt.Printf("[+] Processed threatListUpdateFetch for client\n")
+	log.Printf("Processed threatListUpdateFetch for client\n")
 }
 
 func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +254,7 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		} else {
 			t.hits[match.url] = t.hits[match.url] + 1
 		}
-		fmt.Printf("[!] Hit for %q. Count: %d\n", match.url, t.hits[match.url])
+		log.Printf("Lookup hit for %q. Count: %d\n", match.url, t.hits[match.url])
 	}
 
 	err = marshal(w, resp)
@@ -261,7 +262,7 @@ func (t *testSrv) fullHashesFind(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf("[+] Processed fullHashesFind for client\n")
+	log.Printf("Processed fullHashesFind for client\n")
 }
 
 func (t *testSrv) getHits(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +285,7 @@ func (t *testSrv) getHits(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	fmt.Printf("[+] Processed /hits request for client\n")
+	log.Printf("Processed /hits request for client\n")
 }
 
 func (t *testSrv) gsbHandler(inner http.HandlerFunc) http.HandlerFunc { //w *http.ResponseWriter, r *http.Request) {
@@ -352,12 +353,14 @@ func main() {
 
 	flag.Parse()
 
+	log.SetPrefix("gsb-test-srv: ")
+
 	if *key == "" {
-		fmt.Fprintf(os.Stderr, "Error: -apikey must not be empty\n")
+		log.Fatal("Error: -apikey must not be empty\n")
 		os.Exit(1)
 	}
 
-	fmt.Printf("[+] Starting GSB Test Server on %q\n", *listen)
+	log.Printf("Starting GSB Test Server on %q\n", *listen)
 	ts := newTestServer(*key, []string{"evil.com", "malware.biz"})
 	ts.start(*listen)
 
