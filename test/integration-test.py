@@ -22,7 +22,7 @@ REVOCATION_FAILED = 2
 MAILER_FAILED = 3
 
 class ExitStatus:
-    OK, PythonFailure, NodeFailure, Error, OCSPFailure, CTFailure, IncorrectCommandLineArgs, RevokerFailure = range(8)
+    OK, PythonFailure, NodeFailure, Error, OCSPFailure, CTFailure, IncorrectCommandLineArgs, RevokerFailure, GSBFailure = range(9)
 
 JS_DIR = 'test/js'
 
@@ -167,6 +167,20 @@ def verify_ct_submission(expectedSubmissions, url):
     if int(submissionStr) != expectedSubmissions:
         print "Expected %d submissions, found %d" % (expectedSubmissions, int(submissionStr))
         die(ExitStatus.CTFailure)
+    return 0
+
+def verify_gsb_lookups(url, expected, server):
+    resp = urllib2.urlopen(server)
+    hitStr = resp.read()
+    hits = json.loads(hitStr)
+
+    if not url.endswith("/"):
+        url = url + "/"
+
+    actual = hits.get(url, 0)
+    if actual != expected:
+        print "Expected %d Google Safe Browsing lookups for %s, found %d" % (expected, url, actual)
+        die(ExitStatus.GSBFailure)
     return 0
 
 def run_node_test(domain, chall_type, expected_ct_submissions):
@@ -425,6 +439,12 @@ def main():
         if run_node_test("bad-caa-reserved.com", challenge_types[0], expected_ct_submissions) != ISSUANCE_FAILED:
             print("\nIssused certificate for domain with bad CAA records")
             die(ExitStatus.NodeFailure)
+
+        if run_node_test("honest.achmeds.discount.hosting.com", challenge_types[0], expected_ct_submissions) != ISSUANCE_FAILED:
+            print("\nIssued certificate for domain on Google Safe Browsing test server list")
+            die(ExitStatus.NodeFailure)
+
+        verify_gsb_lookups("honest.achmeds.discount.hosting.com", 1, "http://localhost:6000/hits")
 
         run_expired_authz_purger_test()
 
