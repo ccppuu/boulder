@@ -108,7 +108,7 @@ func (p hashPrefixes) sort() { sort.Sort(p) }
 
 func (p hashPrefixes) searchWith(f func(int) bool) *hashPrefix {
 	i := sort.Search(len(p), f)
-	if i > 0 && i < len(p) {
+	if i < len(p) {
 		return &p[i]
 	}
 	return nil
@@ -116,13 +116,13 @@ func (p hashPrefixes) searchWith(f func(int) bool) *hashPrefix {
 
 func (p hashPrefixes) findByURL(url string) *hashPrefix {
 	return p.searchWith(func(i int) bool {
-		return p[i].url == url
+		return p[i].url >= url
 	})
 }
 
 func (p hashPrefixes) findByHash(h string) *hashPrefix {
 	return p.searchWith(func(i int) bool {
-		return p[i].hash == h
+		return p[i].hash >= h
 	})
 }
 
