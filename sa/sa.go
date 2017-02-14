@@ -770,8 +770,7 @@ func (ssa *SQLStorageAuthority) AddCertificate(ctx context.Context, certDER []by
 		Expires:        parsedCertificate.NotAfter,
 	}
 
-	var certStatusOb interface{}
-	certStatusOb = &certStatusModel{
+	certStatusOb := &certStatusModel{
 		SubscriberApproved: false,
 		Status:             core.OCSPStatus("good"),
 		OCSPLastUpdated:    time.Time{},
