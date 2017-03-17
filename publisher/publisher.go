@@ -217,6 +217,7 @@ func (pub *Impl) SubmitToSingleCT(
 // SubmitToCT will submit the certificate represented by certDER to any CT
 // logs configured in pub.CT.Logs (AMQP RPC method).
 func (pub *Impl) SubmitToCT(ctx context.Context, der []byte) error {
+	fmt.Printf("\n\npublisher: SubmitToCT() called, doing individual SubmitToSingleCT calls\n\n")
 	for _, ctLog := range pub.ctLogs {
 		err := pub.SubmitToSingleCT(ctx, ctLog.uri, ctLog.logID, der)
 		if err != nil {
@@ -231,6 +232,7 @@ func (pub *Impl) singleLogSubmit(
 	chain []ct.ASN1Cert,
 	serial string,
 	ctLog *Log) error {
+	fmt.Printf("\n\npublisher: SubmitToSingleCT() called\n\n")
 
 	sct, err := ctLog.client.AddChain(ctx, chain)
 	if err != nil {

@@ -168,25 +168,41 @@ def test_ct_submission():
     # is just the one it already has submitted to).
     url_a = "http://boulder:4500/submissions"
     url_b = "http://boulder:4501/submissions"
+    print("\n\ntest_ct_submission starting...\n\n")
     submissions_a = urllib2.urlopen(url_a).read()
     submissions_b = urllib2.urlopen(url_a).read()
+    print("submissions_a at start: {0}".format(submissions_a))
+    print("submissions_b at start: {0}".format(submissions_b))
     expected_a_submissions = int(submissions_a)+1
     expected_b_submissions = int(submissions_b)+1
+    print("expected_a_submissions: {0}".format(expected_a_submissions))
+    print("expected_b_submissions: {0}".format(expected_b_submissions))
+    print("Authing and issuing for a random domain...")
     auth_and_issue([random_domain()])
     submissions_a = urllib2.urlopen(url_a).read()
+    print("submissions_a is now: {0}".format(submissions_a))
     if int(submissions_a) != expected_a_submissions:
         raise Exception("Expected %d CT submissions to boulder:4500, found %s" % (expected_a_submissions, submissions_a))
+    print("Got expected, moving on...")
     # Only test when ResubmitMissingSCTsOnly is enabled
     if not default_config_dir.startswith("test/config-next"):
+        print("Not running with config-next, see ya!")
         return
+    print("Checking more...")
     for _ in range(0, 10):
         submissions_a = urllib2.urlopen(url_a).read()
         submissions_b = urllib2.urlopen(url_b).read()
+        print("submissions_a now: {0}".format(submissions_a))
+        print("submissions_b now: {0}".format(submissions_b))
         if int(submissions_a) != expected_a_submissions:
+            print("submissions_a does NOT check out!")
             raise Exception("Expected no change in submissions to boulder:4500: expected %s, got %s" % (expected_a_submissions, submissions_a))
         if int(submissions_b) == expected_b_submissions:
+            print("submissions_b checks out!")
             return
+        print("Sleeping...")
         time.sleep(1)
+    print("Shit broke, all done")
     raise Exception("Expected %d CT submissions to boulder:4501, found %s" % (expected_b_submissions, submissions_b))
 
 

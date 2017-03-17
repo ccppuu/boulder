@@ -598,6 +598,8 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 	}
 
 	for _, serial := range serials {
+		fmt.Printf("\n\nocsp-updater: processing cert %#v\n", serial)
+
 		// First find the logIDs that have provided a SCT for the serial
 		logIDs, err := updater.getSubmittedReceipts(serial)
 		if err != nil {
@@ -606,6 +608,8 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 			continue
 		}
 
+		fmt.Printf("\n\nocsp-updater: found sct for %d logs\n", len(logIDS))
+
 		// Next, check if any of the configured CT logs are missing from the list of
 		// logs that have given SCTs for this serial
 		missingLogs := updater.missingLogs(logIDs)
@@ -613,6 +617,8 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 			// If all of the logs have provided a SCT we're done for this serial
 			continue
 		}
+
+		fmt.Printf("\n\nocsp-updateR: found missing logs: %#v\n", missingLogs)
 
 		// Otherwise, we need to get the certificate from the SA & submit it to each
 		// of the missing logs to obtain SCTs.
@@ -626,10 +632,12 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 		// logs using the `SubmitToSingleCT` endpoint that was added for this
 		// purpose
 		if features.Enabled(features.ResubmitMissingSCTsOnly) {
+			fmt.Printf("\n\nocsp-updater: Submitting SCT only to missing logs\n\n")
 			for _, log := range missingLogs {
 				_ = updater.pubc.SubmitToSingleCT(ctx, log.uri, log.key, cert.DER)
 			}
 		} else {
+			fmt.Printf("\n\nocsp-updater: Submitting SCT to ALL logs\n\n")
 			// Otherwise, use the classic behaviour and submit the certificate to
 			// every log to get SCTS using the pre-existing `SubmitToCT` endpoint
 			_ = updater.pubc.SubmitToCT(ctx, cert.DER)
