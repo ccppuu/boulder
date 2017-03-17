@@ -608,7 +608,7 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 			continue
 		}
 
-		fmt.Printf("\n\nocsp-updater: found sct for %d logs\n", len(logIDS))
+		fmt.Printf("\n\nocsp-updater: found sct for %d logs\n", len(logIDs))
 
 		// Next, check if any of the configured CT logs are missing from the list of
 		// logs that have given SCTs for this serial
