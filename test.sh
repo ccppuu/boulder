@@ -86,7 +86,7 @@ function run_unit_tests() {
 
     # Run the full suite of tests once with the -race flag. Since this isn't
     # running tests individually we can't collect coverage information.
-    go test -race -p 1 ./...
+    go test -race -p 1 ${TESTPATHS}
 
     # Run each test by itself for Travis, so we can get coverage. We skip using
     # the -race flag here because we have already done a full test run with
