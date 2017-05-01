@@ -79,15 +79,22 @@ function run_unit_tests() {
     # are not stdlib packages. We can then install them with the race
     # detector enabled to prevent our individual `go test` calls from
     # building them multiple times.
-    all_shared_imports=$(go list -f '{{ join .Imports "\n" }}' ${TESTPATHS} | sort | uniq)
-    deps=$(go list -f '{{ if not .Standard }}{{ .ImportPath }}{{ end }}' ${all_shared_imports})
-    echo "go installing race detector enabled dependencies"
-    go install -race $deps
+    #all_shared_imports=$(go list -f '{{ join .Imports "\n" }}' ${TESTPATHS} | sort | uniq)
+    #deps=$(go list -f '{{ if not .Standard }}{{ .ImportPath }}{{ end }}' ${all_shared_imports})
+    #echo "go installing race detector enabled dependencies"
+    #go install -race $deps
 
-    # Run each test by itself for Travis, so we can get coverage
+    # Run the full suite of tests once with the -race flag. Since this isn't
+    # running tests individually we can't collect coverage information.
+    go test -race -p 1 ./...
+
+    # Run each test by itself for Travis, so we can get coverage. We skip using
+    # the -race flag here because we have already done a full test run with
+    # -race above and it adds substantial overhead to run every test with -race
+    # independently
     for path in ${TESTPATHS}; do
       dir=$(basename $path)
-      go test -race -cover -coverprofile=${dir}.coverprofile ${path} || FAILURE=1
+      go test -cover -coverprofile=${dir}.coverprofile ${path} || FAILURE=1
     done
 
     # Gather all the coverprofiles
