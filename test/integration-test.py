@@ -172,8 +172,17 @@ def test_ct_submission():
     submissions_b = urllib2.urlopen(url_a).read()
     expected_a_submissions = int(submissions_a)+1
     expected_b_submissions = int(submissions_b)+1
+
+    print("-> Log A has {0} submissions so far. We expect {1} next".format(submissions_a, expected_a_submissions))
+    print("-> Log B has {0} submissions so far. We expect {1} next".format(submissions_b, expected_b_submissions))
+
+    print("\n\n\n")
     auth_and_issue([random_domain()])
+    print("\n\n\n")
+
     submissions_a = urllib2.urlopen(url_a).read()
+    print("-> Log A now has {0} submissions. We expected {1}".format(submissions_a, expected_a_submissions))
+
     # Presently the CA and the ocsp-updater can race on the initial submission
     # of a certificate to the configured logs. This results in over submitting
     # certificates. This is expected to be fixed in the future by a planned
@@ -182,20 +191,32 @@ def test_ct_submission():
     # for more information: https://github.com/letsencrypt/boulder/issues/2610
     if (int(submissions_a) < expected_a_submissions or
         int(submissions_a) > 2 * expected_a_submissions):
+        print("-> Log A Outside expected range. FAILING!!!!!!!!!!!!!!!!!!")
         raise Exception("Expected %d CT submissions to boulder:4500, found %s" % (expected_a_submissions, submissions_a))
+
+    print("-> Log A was all good")
     # Only test when ResubmitMissingSCTsOnly is enabled
+    print("-> Config dir is {0}".format(default_config_dir))
     if not default_config_dir.startswith("test/config-next"):
+        print("-> Returning - we're not using config-next")
         return
+    print("-> testing for ResubmitMissingSCTsOnly")
     for _ in range(0, 10):
         submissions_a = urllib2.urlopen(url_a).read()
         submissions_b = urllib2.urlopen(url_b).read()
+        print("-> Log A now has {0} submissions. We expected {1}".format(submissions_a, expected_a_submissions))
+        print("-> Log B has {0} submissions. We expected {1} next".format(submissions_b, expected_b_submissions))
+
         if (int(submissions_a) < expected_a_submissions or
             int(submissions_a) > 2 * expected_a_submissions):
+            print("-> Log A Outside expected range for resubmit test. FAILING!!!!!!!!!!!!!!!!!!")
             raise Exception("Expected no change in submissions to boulder:4500: expected %s, got %s" % (expected_a_submissions, submissions_a))
         if (int(submissions_b) >= expected_b_submissions and
             int(submissions_b) < 2 * expected_b_submissions + 1):
+            print("-> Log B was all good")
             return
         time.sleep(1)
+    print("-> Log B Outside expected range. FAILING!!!!!!!!!!!!!!!!!!")
     raise Exception("Expected %d CT submissions to boulder:4501, found %s" % (expected_b_submissions, submissions_b))
 
 

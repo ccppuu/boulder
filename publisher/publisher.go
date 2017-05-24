@@ -187,6 +187,8 @@ func (pub *Impl) SubmitToSingleCT(
 	defer cancel()
 	chain := append([]ct.ASN1Cert{der}, pub.issuerBundle...)
 
+	fmt.Printf("\n\n\n------> Publisher.SubmitToSingleCT: sending %q to %q\n\n\n", core.SerialToString(cert.SerialNumber), logURL)
+
 	// Add a log URL/pubkey to the cache, if already present the
 	// existing *Log will be returned, otherwise one will be constructed, added
 	// and returned.
@@ -217,6 +219,7 @@ func (pub *Impl) SubmitToSingleCT(
 // SubmitToCT will submit the certificate represented by certDER to any CT
 // logs configured in pub.CT.Logs.
 func (pub *Impl) SubmitToCT(ctx context.Context, der []byte) error {
+	fmt.Printf("\n\n\n------> Publisher.SubmitToCT: sending a cert to every log\n\n\n")
 	for _, ctLog := range pub.ctLogs {
 		err := pub.SubmitToSingleCT(ctx, ctLog.uri, ctLog.logID, der)
 		if err != nil {
