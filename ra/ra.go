@@ -688,8 +688,10 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 		return emptyCert, err
 	}
 
+	fmt.Printf("\n\n---> RA.publisher: %#v\n\n", ra.publisher)
 	if ra.publisher != nil {
 		go func() {
+			fmt.Printf("\n\n-----> RA is Sending new cert to ALL LOGS\n\n")
 			// Since we don't want this method to be canceled if the parent context
 			// expires, pass a background context to it and run it in a goroutine.
 			_ = ra.publisher.SubmitToCT(context.Background(), cert.DER)
@@ -713,6 +715,7 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 
 	now := ra.clk.Now()
 	logEvent.SerialNumber = core.SerialToString(parsedCertificate.SerialNumber)
+	fmt.Printf("\n\n -------> RA sent %q to all logs\n\n", logEvent.SerialNumber)
 	logEvent.CommonName = parsedCertificate.Subject.CommonName
 	logEvent.NotBefore = parsedCertificate.NotBefore
 	logEvent.NotAfter = parsedCertificate.NotAfter
