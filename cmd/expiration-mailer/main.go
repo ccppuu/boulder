@@ -28,9 +28,9 @@ import (
 	bgrpc "github.com/letsencrypt/boulder/grpc"
 	blog "github.com/letsencrypt/boulder/log"
 	bmail "github.com/letsencrypt/boulder/mail"
-	"github.com/letsencrypt/boulder/metrics"
 	"github.com/letsencrypt/boulder/sa"
 	sapb "github.com/letsencrypt/boulder/sa/proto"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 const (
@@ -43,16 +43,20 @@ type regStore interface {
 }
 
 type mailer struct {
-	stats           metrics.Scope
-	log             blog.Logger
-	dbMap           *gorp.DbMap
-	rs              regStore
-	mailer          bmail.Mailer
-	emailTemplate   *template.Template
-	subjectTemplate *template.Template
-	nagTimes        []time.Duration
-	limit           int
-	clk             clock.Clock
+	log               blog.Logger
+	dbMap             *gorp.DbMap
+	rs                regStore
+	mailer            bmail.Mailer
+	emailTemplate     *template.Template
+	subjectTemplate   *template.Template
+	nagTimes          []time.Duration
+	limit             int
+	clk               clock.Clock
+	nagsAtCapacity    *prometheus.CounterVec
+	errorCount        *prometheus.CounterVec
+	renewalCount      *prometheus.CounterVec
+	sendLatency       prometheus.Histogram
+	processingLatency prometheus.Histogram
 }
 
 func (m *mailer) sendNags(contacts []string, certs []*x509.Certificate) error {
@@ -112,7 +116,7 @@ func (m *mailer) sendNags(contacts []string, certs []*x509.Certificate) error {
 		ExpirationSubject: expiringSubject,
 	})
 	if err != nil {
-		m.stats.Inc("Errors.SendingNag.SubjectTemplateFailure", 1)
+		m.errorCount.With(prometheus.Labels{"type": "SubjectTemplateFailure"}).Inc()
 		return err
 	}
 
@@ -128,7 +132,7 @@ func (m *mailer) sendNags(contacts []string, certs []*x509.Certificate) error {
 	msgBuf := new(bytes.Buffer)
 	err = m.emailTemplate.Execute(msgBuf, email)
 	if err != nil {
-		m.stats.Inc("Errors.SendingNag.TemplateFailure", 1)
+		m.errorCount.With(prometheus.Labels{"type": "TemplateFailure"}).Inc()
 		return err
 	}
 	startSending := m.clk.Now()
@@ -138,7 +142,7 @@ func (m *mailer) sendNags(contacts []string, certs []*x509.Certificate) error {
 	}
 	finishSending := m.clk.Now()
 	elapsed := finishSending.Sub(startSending)
-	m.stats.TimingDuration("SendLatency", elapsed)
+	m.sendLatency.Observe(elapsed.Seconds())
 	return nil
 }
 
@@ -190,7 +194,7 @@ func (m *mailer) processCerts(allCerts []core.Certificate) {
 		reg, err := m.rs.GetRegistration(ctx, regID)
 		if err != nil {
 			m.log.AuditErr(fmt.Sprintf("Error fetching registration %d: %s", regID, err))
-			m.stats.Inc("Errors.GetRegistration", 1)
+			m.errorCount.With(prometheus.Labels{"type": "GetRegistration"}).Inc()
 			continue
 		}
 
@@ -200,7 +204,7 @@ func (m *mailer) processCerts(allCerts []core.Certificate) {
 			if err != nil {
 				// TODO(#1420): tell registration about this error
 				m.log.AuditErr(fmt.Sprintf("Error parsing certificate %s: %s", cert.Serial, err))
-				m.stats.Inc("Errors.ParseCertificate", 1)
+				m.errorCount.With(prometheus.Labels{"type": "ParseCertificate"}).Inc()
 				continue
 			}
 
@@ -209,10 +213,10 @@ func (m *mailer) processCerts(allCerts []core.Certificate) {
 				m.log.AuditErr(fmt.Sprintf("expiration-mailer: error fetching renewal state: %v", err))
 				// assume not renewed
 			} else if renewed {
-				m.stats.Inc("Renewed", 1)
+				m.renewalCount.With(prometheus.Labels{}).Inc()
 				if err := m.updateCertStatus(cert.Serial); err != nil {
 					m.log.AuditErr(fmt.Sprintf("Error updating certificate status for %s: %s", cert.Serial, err))
-					m.stats.Inc("Errors.UpdateCertificateStatus", 1)
+					m.errorCount.With(prometheus.Labels{"type": "UpdateCertificateStatus"}).Inc()
 				}
 				continue
 			}
@@ -239,7 +243,7 @@ func (m *mailer) processCerts(allCerts []core.Certificate) {
 			err = m.updateCertStatus(serial)
 			if err != nil {
 				m.log.AuditErr(fmt.Sprintf("Error updating certificate status for %s: %s", serial, err))
-				m.stats.Inc("Errors.UpdateCertificateStatus", 1)
+				m.errorCount.With(prometheus.Labels{"type": "UpdateCertificateStatus"}).Inc()
 				continue
 			}
 		}
@@ -328,15 +332,14 @@ func (m *mailer) findExpiringCertificates() error {
 				"nag group %s expiring certificates at configured capacity (cert limit %d)\n",
 				expiresIn.String(),
 				m.limit))
-			statName := fmt.Sprintf("Errors.Nag-%s.AtCapacity", expiresIn.String())
-			m.stats.Inc(statName, 1)
+			m.nagsAtCapacity.With(prometheus.Labels{"nagGroup": expiresIn.String()}).Inc()
 		}
 
 		processingStarted := m.clk.Now()
 		m.processCerts(certs)
 		processingEnded := m.clk.Now()
 		elapsed := processingEnded.Sub(processingStarted)
-		m.stats.TimingDuration("ProcessingCertificatesLatency", elapsed)
+		m.processingLatency.Observe(elapsed.Seconds())
 	}
 
 	return nil
@@ -486,17 +489,59 @@ func main() {
 	// Make sure durations are sorted in increasing order
 	sort.Sort(nags)
 
+	nagsAtCapacity := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "nagsAtCapacity",
+			Help: "Count of nag groups at capcacity",
+		},
+		[]string{"nagGroup"})
+	scope.MustRegister(nagsAtCapacity)
+
+	errorCount := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "errors",
+			Help: "Number of errors",
+		},
+		[]string{"type"})
+	scope.MustRegister(errorCount)
+
+	renewalCount := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "renewals",
+			Help: "Number of messages skipped for being renewals",
+		},
+		nil)
+	scope.MustRegister(renewalCount)
+
+	sendLatency := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name: "sendLatency",
+			Help: "Time the mailer takes sending messages",
+		})
+	scope.MustRegister(sendLatency)
+
+	processingLatency := prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name: "processingLatency",
+			Help: "Time the mailer takes processing certificates",
+		})
+	scope.MustRegister(processingLatency)
+
 	m := mailer{
-		stats:           scope,
-		log:             logger,
-		dbMap:           dbMap,
-		rs:              sac,
-		mailer:          mailClient,
-		subjectTemplate: subjTmpl,
-		emailTemplate:   tmpl,
-		nagTimes:        nags,
-		limit:           c.Mailer.CertLimit,
-		clk:             cmd.Clock(),
+		log:               logger,
+		dbMap:             dbMap,
+		rs:                sac,
+		mailer:            mailClient,
+		subjectTemplate:   subjTmpl,
+		emailTemplate:     tmpl,
+		nagTimes:          nags,
+		limit:             c.Mailer.CertLimit,
+		clk:               cmd.Clock(),
+		nagsAtCapacity:    nagsAtCapacity,
+		errorCount:        errorCount,
+		renewalCount:      renewalCount,
+		sendLatency:       sendLatency,
+		processingLatency: processingLatency,
 	}
 
 	go cmd.DebugServer(c.Mailer.DebugAddr)
