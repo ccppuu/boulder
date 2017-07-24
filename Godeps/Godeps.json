@@ -362,21 +362,6 @@
 			"Rev": "4deece61034873cb5b5416e81abe4cea7bd0da72"
 		},
 		{
-			"ImportPath": "gopkg.in/square/go-jose.v1",
-			"Comment": "v1.1.0",
-			"Rev": "aa2e30fdd1fe9dd3394119af66451ae790d50e0d"
-		},
-		{
-			"ImportPath": "gopkg.in/square/go-jose.v1/cipher",
-			"Comment": "v1.1.0",
-			"Rev": "aa2e30fdd1fe9dd3394119af66451ae790d50e0d"
-		},
-		{
-			"ImportPath": "gopkg.in/square/go-jose.v1/json",
-			"Comment": "v1.1.0",
-			"Rev": "aa2e30fdd1fe9dd3394119af66451ae790d50e0d"
-		},
-		{
 			"ImportPath": "gopkg.in/yaml.v2",
 			"Rev": "7ad95dd0798a40da1ccdff6dff35fd177b5edf40"
 		}
