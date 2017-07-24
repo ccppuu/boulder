@@ -19,7 +19,7 @@ import (
 	"github.com/jmhodges/clock"
 	"github.com/weppos/publicsuffix-go/publicsuffix"
 	"golang.org/x/net/context"
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/bdns"
 	"github.com/letsencrypt/boulder/cmd"

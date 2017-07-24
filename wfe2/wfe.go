@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -20,7 +19,7 @@ import (
 
 	"github.com/jmhodges/clock"
 	"golang.org/x/net/context"
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
 	berrors "github.com/letsencrypt/boulder/errors"
@@ -415,40 +414,289 @@ func (wfe *WebFrontEndImpl) Directory(ctx context.Context, logEvent *requestEven
 	response.Write(relDir)
 }
 
+// jwsAuthType represents whether a given POST request is authenticated using
+// a JWS with an embedded JWK (v1 ACME style, new-account, revoke-cert) or an
+// embeded Key ID (v2 AMCE style) or an unsupported/unknown auth type.
+type jwsAuthType int
+
 const (
-	unknownKey = "No registration exists matching provided key"
+	embeddedJWK jwsAuthType = iota
+	embeddedKeyID
+	invalidAuthType
 )
 
-func (wfe *WebFrontEndImpl) extractJWSKey(body string) (*jose.JsonWebKey, *jose.JsonWebSignature, error) {
-	parsedJws, err := jose.ParseSigned(body)
-	if err != nil {
-		wfe.stats.Inc("Errors.UnableToParseJWS", 1)
-		return nil, nil, errors.New("Parse error reading JWS")
+// verifyJWSAuthenticationType examines a JWS' protected headers to determine if
+// the request being authenticated by the JWS is identified using an embedded
+// JWK or an embedded key ID. If mutually exclusive authentication types are
+// specified at the same time, or if the a problem is returned.
+func (wfe *WebFrontEndImpl) verifyJWSAuthenticationType(
+	jws *jose.JSONWebSignature) (jwsAuthType, *probs.ProblemDetails) {
+	// There must be at least one signature on the JWS
+	if len(jws.Signatures) < 1 {
+		return invalidAuthType, probs.Malformed("No signature found in JWS")
 	}
 
-	if len(parsedJws.Signatures) > 1 {
-		wfe.stats.Inc("Errors.TooManyJWSSignaturesInPOST", 1)
-		return nil, nil, errors.New("Too many signatures in POST body")
-	}
-	if len(parsedJws.Signatures) == 0 {
-		wfe.stats.Inc("Errors.JWSNotSignedInPOST", 1)
-		return nil, nil, errors.New("POST JWS not signed")
-	}
+	header := jws.Signatures[0].Header
 
-	key := parsedJws.Signatures[0].Header.JsonWebKey
-	if key == nil {
-		wfe.stats.Inc("Errors.NoJWKInJWSSignatureHeader", 1)
-		return nil, nil, errors.New("No JWK in JWS header")
+	// There must not be a Key ID *and* an embedded JWK
+	if header.KeyID != "" && header.JSONWebKey != nil {
+		return invalidAuthType, probs.Malformed(
+			"jwk and kid header fields are mutually exclusive")
+	} else if header.KeyID != "" {
+		return embeddedKeyID, nil
+	} else if header.JSONWebKey != nil {
+		return embeddedJWK, nil
 	}
-
-	if !key.Valid() {
-		wfe.stats.Inc("Errors.InvalidJWK", 1)
-		return nil, nil, errors.New("Invalid JWK in JWS header")
-	}
-
-	return key, parsedJws, nil
+	return invalidAuthType, nil
 }
 
+// validPOSTRequest checks a *http.Request to ensure it has the headers
+// a well-formed ACME POST request has, and to ensure there is a body to
+// process.
+func (wfe *WebFrontEndImpl) validPOSTRequest(request *http.Request, logEvent *requestEvent) *probs.ProblemDetails {
+	// All POSTs should have an accompanying Content-Length header
+	if _, present := request.Header["Content-Length"]; !present {
+		wfe.stats.Inc("HTTP.ClientErrors.LengthRequiredError", 1)
+		logEvent.AddError("missing Content-Length header on POST")
+		return probs.ContentLengthRequired()
+	}
+
+	// Per 6.4.1 "Replay-Nonce" clients should not send a Replay-Nonce header in
+	// the HTTP request, it needs to be part of the signed JWS request body
+	if _, present := request.Header["Replay-Nonce"]; present {
+		wfe.stats.Inc("HTTP.ClientErrors.ReplayNonceOutsideJWSError", 1)
+		logEvent.AddError("Replay-Nonce header included outside of JWS body")
+		return probs.Malformed("HTTP requests should NOT contain Replay-Nonce header. Use JWS nonce field")
+	}
+
+	// All POSTs should have a non-nil body
+	if request.Body == nil {
+		wfe.stats.Inc("HTTP.ClientErrors.NoPOSTBody", 1)
+		logEvent.AddError("no body on POST")
+		return probs.Malformed("No body on POST")
+	}
+
+	return nil
+}
+
+func (wfe *WebFrontEndImpl) parseJWS(body string) (*jose.JSONWebSignature, *probs.ProblemDetails) {
+	parsedJWS, err := jose.ParseSigned(body)
+	if err != nil {
+		wfe.stats.Inc("Errors.UnableToParseJWS", 1)
+		return nil, probs.Malformed("Parse error reading JWS")
+	}
+
+	if len(parsedJWS.Signatures) > 1 {
+		wfe.stats.Inc("Errors.TooManyJWSSignaturesInPOST", 1)
+		return nil, probs.Malformed("Too many signatures in POST body")
+	}
+	if len(parsedJWS.Signatures) == 0 {
+		wfe.stats.Inc("Errors.JWSNotSignedInPOST", 1)
+		return nil, probs.Malformed("POST JWS not signed")
+	}
+	return parsedJWS, nil
+}
+
+// keyExtractor is a function that returns a JSONWebKey based on input from a
+// user-provided JSONWebSignature, for instance by extracting it from the input,
+// or by looking it up in a database based on the input. It may mutate the
+// provided requestEvent to add errors or account information. If applicable, an
+// associated account will be returned along with the key. If there is no
+// account (e.g. because this is a new-account request with an embedded JWK then
+// the returned account will be nil.
+type keyExtractor func(
+	context.Context,
+	*http.Request,
+	*requestEvent,
+	*jose.JSONWebSignature) (*jose.JSONWebKey, *core.Registration, *probs.ProblemDetails)
+
+// extractJWK is an implementation of a keyExtractor that extracts a JWK from
+// the provided JWS. It always returns a nil account pointer because the key is
+// extracted from the JWS and not from a database lookup for an account.
+func (wfe *WebFrontEndImpl) extractJWK(
+	_ context.Context,
+	_ *http.Request,
+	logEvent *requestEvent,
+	jws *jose.JSONWebSignature) (*jose.JSONWebKey, *core.Registration, *probs.ProblemDetails) {
+	header := jws.Signatures[0].Header
+	// We expect the request to be using an embedded JWK auth type and to not
+	// contain the mutually exclusive KeyID.
+	authType, prob := wfe.verifyJWSAuthenticationType(jws)
+	if prob != nil {
+		wfe.stats.Inc("Errors.InvalidJWSAuth", 1)
+		return nil, nil, prob
+	}
+	if authType != embeddedJWK {
+		wfe.stats.Inc("Errors.WrongJWSAuthType", 1)
+		return nil, nil, probs.Malformed("No JWK in JWS header")
+	}
+
+	key := header.JSONWebKey
+	// If there is no key, we can't extract it
+	if key == nil {
+		wfe.stats.Inc("Errors.NoJWKInJWSSignatureHeader", 1)
+		return nil, nil, probs.Malformed("No JWK in JWS header")
+	}
+
+	// If the key isn't considered valid by go-jose we don't want to use it
+	if !key.Valid() {
+		wfe.stats.Inc("Errors.InvalidJWK", 1)
+		return nil, nil, probs.Malformed("Invalid JWK in JWS header")
+	}
+
+	// If the key doesn't meet the GoodKey policy we don't want to use it
+	if err := wfe.keyPolicy.GoodKey(key); err != nil {
+		wfe.stats.Inc("Errors.JWKRejectedByGoodKey", 1)
+		logEvent.AddError("JWK in request was rejected by GoodKey: %s", err)
+		return nil, nil, probs.Malformed(err.Error())
+	}
+
+	return key, nil, nil
+}
+
+// lookupJWK is an implementation of a keyExtractor that extracts a JWK from the
+// database doing a lookup by the provided key ID. The provided logEvent is mutated to
+// set the Requester and Contacts fields based on the retreived account
+// information. A pointer to the account associated with the key is additionally
+// returned.
+func (wfe *WebFrontEndImpl) lookupJWK(
+	ctx context.Context,
+	request *http.Request,
+	logEvent *requestEvent,
+	jws *jose.JSONWebSignature) (*jose.JSONWebKey, *core.Registration, *probs.ProblemDetails) {
+	// We expect the request to be using a embedded key ID auth type and to not
+	// contain a mututally exclusive embedded JWK.
+	authType, prob := wfe.verifyJWSAuthenticationType(jws)
+	if prob != nil {
+		wfe.stats.Inc("Errors.InvalidJWSAuth", 1)
+		return nil, nil, prob
+	}
+	if authType != embeddedKeyID {
+		wfe.stats.Inc("Errors.WrongJWSAuthType", 1)
+		return nil, nil, probs.Malformed("No Key ID in JWS header")
+	}
+
+	// The account URL is absolute and we must extract just the account ID for the
+	// lookup operation
+	header := jws.Signatures[0].Header
+	accountURL := header.KeyID
+	prefix := wfe.relativeEndpoint(request, regPath)
+	accountIDStr := strings.TrimPrefix(accountURL, prefix)
+
+	// Convert the account ID string to a int64 for use with the SA's
+	// GetRegistration RPC
+	accountID, err := strconv.ParseInt(accountIDStr, 10, 64)
+	if err != nil {
+		wfe.stats.Inc("Errors.InvalidKeyID", 1)
+		return nil, nil, probs.Malformed(fmt.Sprintf("Malformed account ID in KeyID header"))
+	}
+
+	// Try to find the account for this account ID
+	account, err := wfe.SA.GetRegistration(ctx, accountID)
+	if !berrors.Is(err, berrors.NotFound) && err != nil {
+		// If there is an error other than berrors.NotFound, return immediately
+		wfe.stats.Inc("Errors.UnableToGetRegistrationByKey", 1)
+		return nil, nil, probs.ServerInternal(fmt.Sprintf(
+			"Error retrieving account %q", accountURL))
+	} else if berrors.Is(err, berrors.NotFound) {
+		// If the account isn't found, return a suitable problem
+		wfe.stats.Inc("Errors.KeyIDNotFound", 1)
+		return nil, nil, probs.AccountDoesNotExist(fmt.Sprintf(
+			"Account %q not found.", accountURL))
+	}
+
+	// Verify that the account is not deactivated
+	if features.Enabled(features.AllowAccountDeactivation) && account.Status != core.StatusValid {
+		return nil, nil, probs.Unauthorized(
+			fmt.Sprintf("Account is not valid, has status '%s'", account.Status))
+	}
+
+	// Update the logEvent with the account information & return the JWK
+	logEvent.Requester = account.ID
+	logEvent.Contacts = account.Contact
+	return account.Key, &account, nil
+}
+
+// verifyNonce checks a JWS' Nonce header to ensure it is one that the
+// nonceService knows about. The provided logEvent is mutated to set the
+// RequestNonce based on the verification or to add observed errors.
+func (wfe *WebFrontEndImpl) verifyNonce(
+	logEvent *requestEvent,
+	jws *jose.JSONWebSignature) *probs.ProblemDetails {
+	// Check that the request has a known anti-replay nonce
+	nonce := jws.Signatures[0].Header.Nonce
+	logEvent.RequestNonce = nonce
+	if len(nonce) == 0 {
+		wfe.stats.Inc("Errors.JWSMissingNonce", 1)
+		logEvent.AddError("JWS is missing an anti-replay nonce")
+		return probs.BadNonce("JWS has no anti-replay nonce")
+	} else if !wfe.nonceService.Valid(nonce) {
+		wfe.stats.Inc("Errors.JWSInvalidNonce", 1)
+		logEvent.AddError("JWS has an invalid anti-replay nonce: %s", nonce)
+		return probs.BadNonce(fmt.Sprintf("JWS has invalid anti-replay nonce %v", nonce))
+	}
+	return nil
+}
+
+// verifyPOSTURL checks the JWS' URL header against the expected URL based on
+// the HTTP request. This prevents a JWS intended for one endpoint to be
+// replayed against a different endpoint.
+func (wfe *WebFrontEndImpl) verifyPOSTURL(
+	request *http.Request,
+	jws *jose.JSONWebSignature) *probs.ProblemDetails {
+
+	// Verify that the JWS has a non-empty URL header
+	headerURL, ok := jws.Signatures[0].Header.ExtraHeaders[jose.HeaderKey("url")].(string)
+	if !ok || len(headerURL) == 0 {
+		return probs.Malformed("JWS header parameter 'url' required.")
+	}
+	// Compute the URL we expect to be in the JWS based on the HTTP request
+	expectedURL := url.URL{
+		Scheme: "http",
+		Host:   request.Host,
+		Path:   request.RequestURI,
+	}
+	// Check that the URL we expect is the one that was found in the signed JWS
+	// header
+	if expectedURL.String() != headerURL {
+		return probs.Malformed(fmt.Sprintf(
+			"JWS header parameter 'url' incorrect. Expected %q, got %q",
+			expectedURL.String(), headerURL))
+	}
+
+	return nil
+}
+
+// matchJWSURLs checks two JWS' URL headers are equal. This is used during key
+// rollover to check that the inner JWS URL matches the outer JWS URL.
+func (wfe *WebFrontEndImpl) matchJWSURLs(
+	outer, inner *jose.JSONWebSignature) *probs.ProblemDetails {
+
+	// Verify that the outer JWS has a non-empty URL header. This is strictly
+	// defensive since the key roll over endpoint calls verifyPOST(), which checks
+	// the outer JWS has the expected URL header before processing the inner JWS.
+	outerURL, ok := outer.Signatures[0].Header.ExtraHeaders[jose.HeaderKey("url")].(string)
+	if !ok || len(outerURL) == 0 {
+		return probs.Malformed("Outer JWS header parameter 'url' required.")
+	}
+
+	// Verify the inner JWS has a non-empty URL header.
+	innerURL, ok := inner.Signatures[0].Header.ExtraHeaders[jose.HeaderKey("url")].(string)
+	if !ok || len(innerURL) == 0 {
+		return probs.Malformed("Inner JWS header parameter 'url' required.")
+	}
+
+	// Verify that the outer URL matches the inner URL
+	if outerURL != innerURL {
+		return probs.Malformed(fmt.Sprintf(
+			"Outer JWS 'url' value %q does not match inner JWS 'url' value %q",
+			outerURL, innerURL))
+	}
+
+	return nil
+}
+
+// TODO(@cpu): rewrite this comment - it is not accurate anymore
 // verifyPOST reads and parses the request body, looks up the Registration
 // corresponding to its JWK, verifies the JWS signature, checks that the
 // resource field is present and correct in the JWS protected header, and
@@ -461,88 +709,54 @@ func (wfe *WebFrontEndImpl) extractJWSKey(body string) (*jose.JsonWebKey, *jose.
 // the key itself.  verifyPOST also appends its errors to requestEvent.Errors so
 // code calling it does not need to if they immediately return a response to the
 // user.
-func (wfe *WebFrontEndImpl) verifyPOST(ctx context.Context, logEvent *requestEvent, request *http.Request, regCheck bool, resource core.AcmeResource) ([]byte, *jose.JsonWebKey, core.Registration, *probs.ProblemDetails) {
-	// TODO: We should return a pointer to a registration, which can be nil,
-	// rather the a registration value with a sentinel value.
-	// https://github.com/letsencrypt/boulder/issues/877
-	reg := core.Registration{ID: 0}
-
-	if _, ok := request.Header["Content-Length"]; !ok {
-		wfe.stats.Inc("HTTP.ClientErrors.LengthRequiredError", 1)
-		logEvent.AddError("missing Content-Length header on POST")
-		return nil, nil, reg, probs.ContentLengthRequired()
+func (wfe *WebFrontEndImpl) verifyPOST(
+	ctx context.Context,
+	logEvent *requestEvent,
+	request *http.Request,
+	kx keyExtractor) ([]byte, *jose.JSONWebKey, *jose.JSONWebSignature, *core.Registration, *probs.ProblemDetails) {
+	// Verify that the POST request has the expected headers
+	prob := wfe.validPOSTRequest(request, logEvent)
+	if prob != nil {
+		return nil, nil, nil, nil, prob
 	}
 
-	// Read body
-	if request.Body == nil {
-		wfe.stats.Inc("Errors.NoPOSTBody", 1)
-		logEvent.AddError("no body on POST")
-		return nil, nil, reg, probs.Malformed("No body on POST")
-	}
-
+	// Read the POST request body's bytes
 	bodyBytes, err := ioutil.ReadAll(request.Body)
 	if err != nil {
 		wfe.stats.Inc("Errors.UnableToReadRequestBody", 1)
 		logEvent.AddError("unable to read request body")
-		return nil, nil, reg, probs.ServerInternal("unable to read request body")
+		return nil, nil, nil, nil, probs.ServerInternal("unable to read request body")
 	}
 
+	// Read the JWS from the POST body
 	body := string(bodyBytes)
+	parsedJWS, prob := wfe.parseJWS(body)
+	if prob != nil {
+		return nil, nil, nil, nil, prob
+	}
 
-	// Verify JWS
+	// Extract the JWK and associated account (if applicable) using the provided
+	// key extractor
+	pubKey, account, prob := kx(ctx, request, logEvent, parsedJWS)
+	if prob != nil {
+		return nil, nil, nil, nil, prob
+	}
+
+	// Check that the public key and JWS algorithms match expected
+	if statName, err := checkAlgorithm(pubKey, parsedJWS); err != nil {
+		wfe.stats.Inc(statName, 1)
+		return nil, nil, nil, nil, probs.Malformed(err.Error())
+	}
+
+	// Verify the JWS signature with the extracted public key
 	// NOTE: It might seem insecure for the WFE to be trusted to verify
 	// client requests, i.e., that the verification should be done at the
 	// RA.  However the WFE is the RA's only view of the outside world
 	// *anyway*, so it could always lie about what key was used by faking
 	// the signature itself.
-	submittedKey, parsedJws, err := wfe.extractJWSKey(body)
-	if err != nil {
-		logEvent.AddError(err.Error())
-		return nil, nil, reg, probs.Malformed(err.Error())
-	}
-
-	var key *jose.JsonWebKey
-	reg, err = wfe.SA.GetRegistrationByKey(ctx, submittedKey)
-	// Special case: If no registration was found, but regCheck is false, use an
-	// empty registration and the submitted key. The caller is expected to do some
-	// validation on the returned key.
-	if berrors.Is(err, berrors.NotFound) && !regCheck {
-		// When looking up keys from the registrations DB, we can be confident they
-		// are "good". But when we are verifying against any submitted key, we want
-		// to check its quality before doing the verify.
-		if err = wfe.keyPolicy.GoodKey(submittedKey.Key); err != nil {
-			wfe.stats.Inc("Errors.JWKRejectedByGoodKey", 1)
-			logEvent.AddError("JWK in request was rejected by GoodKey: %s", err)
-			return nil, nil, reg, probs.Malformed(err.Error())
-		}
-		key = submittedKey
-	} else if err != nil {
-		// For all other errors, or if regCheck is true, return error immediately.
-		wfe.stats.Inc("Errors.UnableToGetRegistrationByKey", 1)
-		logEvent.AddError("unable to fetch registration by the given JWK: %s", err)
-		if berrors.Is(err, berrors.NotFound) {
-			return nil, nil, reg, probs.Unauthorized(unknownKey)
-		}
-
-		return nil, nil, reg, probs.ServerInternal("Failed to get registration by key")
-	} else {
-		// If the lookup was successful, use that key.
-		key = reg.Key
-		logEvent.Requester = reg.ID
-		logEvent.Contacts = reg.Contact
-	}
-
-	// Only check for validity if we are actually checking the registration
-	if regCheck && features.Enabled(features.AllowAccountDeactivation) && reg.Status != core.StatusValid {
-		return nil, nil, reg, probs.Unauthorized(fmt.Sprintf("Registration is not valid, has status '%s'", reg.Status))
-	}
-
-	if statName, err := checkAlgorithm(key, parsedJws); err != nil {
-		wfe.stats.Inc(statName, 1)
-		return nil, nil, reg, probs.Malformed(err.Error())
-	}
-
-	payload, err := parsedJws.Verify(key)
+	payload, err := parsedJWS.Verify(pubKey)
+	// If the signature verification fails, then return an error immediately with
+	// a small bit of context from the JWS body
 	if err != nil {
 		wfe.stats.Inc("Errors.JWSVerificationFailed", 1)
 		n := len(body)
@@ -550,44 +764,24 @@ func (wfe *WebFrontEndImpl) verifyPOST(ctx context.Context, logEvent *requestEve
 			n = 100
 		}
 		logEvent.AddError("verification of JWS with the JWK failed: %v; body: %s", err, body[:n])
-		return nil, nil, reg, probs.Malformed("JWS verification error")
+		return nil, nil, nil, nil, probs.Malformed("JWS verification error")
 	}
+	// Store the verified payload in the logEvent
 	logEvent.Payload = string(payload)
 
-	// Check that the request has a known anti-replay nonce
-	nonce := parsedJws.Signatures[0].Header.Nonce
-	logEvent.RequestNonce = nonce
-	if len(nonce) == 0 {
-		wfe.stats.Inc("Errors.JWSMissingNonce", 1)
-		logEvent.AddError("JWS is missing an anti-replay nonce")
-		return nil, nil, reg, probs.BadNonce("JWS has no anti-replay nonce")
-	} else if !wfe.nonceService.Valid(nonce) {
-		wfe.stats.Inc("Errors.JWSInvalidNonce", 1)
-		logEvent.AddError("JWS has an invalid anti-replay nonce: %s", nonce)
-		return nil, nil, reg, probs.BadNonce(fmt.Sprintf("JWS has invalid anti-replay nonce %v", nonce))
+	// Check that the JWS contains a correct Nonce header
+	prob = wfe.verifyNonce(logEvent, parsedJWS)
+	if prob != nil {
+		return nil, nil, nil, nil, prob
 	}
 
-	// Check that the "resource" field is present and has the correct value
-	var parsedRequest struct {
-		Resource string `json:"resource"`
-	}
-	err = json.Unmarshal([]byte(payload), &parsedRequest)
-	if err != nil {
-		wfe.stats.Inc("Errors.UnparseableJWSPayload", 1)
-		logEvent.AddError("unable to JSON parse resource from JWS payload: %s", err)
-		return nil, nil, reg, probs.Malformed("Request payload did not parse as JSON")
-	}
-	if parsedRequest.Resource == "" {
-		wfe.stats.Inc("Errors.NoResourceInJWSPayload", 1)
-		logEvent.AddError("JWS request payload does not specify a resource")
-		return nil, nil, reg, probs.Malformed("Request payload does not specify a resource")
-	} else if resource != core.AcmeResource(parsedRequest.Resource) {
-		wfe.stats.Inc("Errors.MismatchedResourceInJWSPayload", 1)
-		logEvent.AddError("JWS request payload does not match resource")
-		return nil, nil, reg, probs.Malformed("JWS resource payload does not match the HTTP resource: %s != %s", parsedRequest.Resource, resource)
+	// Check that the HTTP request URL matches the URL in the signed JWS
+	prob = wfe.verifyPOSTURL(request, parsedJWS)
+	if prob != nil {
+		return nil, nil, nil, nil, prob
 	}
 
-	return []byte(payload), key, reg, nil
+	return []byte(payload), pubKey, parsedJWS, account, nil
 }
 
 // sendError sends an error response represented by the given ProblemDetails,
@@ -634,7 +828,10 @@ func link(url, relation string) string {
 // NewRegistration is used by clients to submit a new registration/account
 func (wfe *WebFrontEndImpl) NewRegistration(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
 
-	body, key, _, prob := wfe.verifyPOST(ctx, logEvent, request, false, core.ResourceNewReg)
+	// We use extractJWK rather than lookupJWK here because the account is not yet
+	// created, so the user provides the full key in a JWS header rather than
+	// referring to an existing key.
+	body, key, _, _, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.extractJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// verifyPOST handles its own setting of logEvent.Errors
@@ -705,7 +902,7 @@ func (wfe *WebFrontEndImpl) NewRegistration(ctx context.Context, logEvent *reque
 
 // NewAuthorization is used by clients to submit a new ID Authorization
 func (wfe *WebFrontEndImpl) NewAuthorization(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
-	body, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceNewAuthz)
+	body, _, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// verifyPOST handles its own setting of logEvent.Errors
@@ -770,27 +967,80 @@ func (wfe *WebFrontEndImpl) regHoldsAuthorizations(ctx context.Context, regID in
 }
 
 // RevokeCertificate is used by clients to request the revocation of a cert.
-func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
-	// We don't ask verifyPOST to verify there is a corresponding registration,
-	// because anyone with the right private key can revoke a certificate.
-	body, requestKey, registration, prob := wfe.verifyPOST(ctx, logEvent, request, false, core.ResourceRevokeCert)
-	addRequesterHeader(response, logEvent.Requester)
+func (wfe *WebFrontEndImpl) RevokeCertificate(
+	ctx context.Context,
+	logEvent *requestEvent,
+	response http.ResponseWriter,
+	request *http.Request) {
+
+	// The ACME specification handles the verification of revocation requests
+	// differently from other endpoints. For this reason we do *not* immediately
+	// call `wfe.verifyPOST` like all of the other endpoints.
+	// For this endpoint we need to accept a JWS with an embedded JWK, or a JWS
+	// with an embedded key ID, handling each case differently in terms of which
+	// certificates are authorized to be revoked by the requester
+
+	// Verify that the POST request has the expected headers
+	prob := wfe.validPOSTRequest(request, logEvent)
 	if prob != nil {
-		// verifyPOST handles its own setting of logEvent.Errors
 		wfe.sendError(response, logEvent, prob, nil)
 		return
 	}
 
+	// Read the POST request body's bytes
+	bodyBytes, err := ioutil.ReadAll(request.Body)
+	if err != nil {
+		wfe.sendError(response, logEvent, probs.ServerInternal("Error reading POST body"), err)
+		return
+	}
+
+	// Read the JWS from the POST body
+	body := string(bodyBytes)
+	parsedJWS, prob := wfe.parseJWS(body)
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
+		return
+	}
+
+	// Once the JWS is available, determine which authentication type it uses
+	authType, prob := wfe.verifyJWSAuthenticationType(parsedJWS)
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
+		return
+	}
+
+	var jwsBody []byte
+	var requestKey *jose.JSONWebKey
+	var reg *core.Registration
+	var regID int64
+
+	// If the authentication type is an embedded JWK verify the POST request with extractJWK
+	if authType == embeddedJWK {
+		jwsBody, requestKey, _, _, prob = wfe.verifyPOST(ctx, logEvent, request, wfe.extractJWK)
+	} else if authType == embeddedKeyID {
+		// Otherwise verify with lookupJWK
+		jwsBody, requestKey, _, reg, prob = wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
+		regID = reg.ID
+	}
+
+	addRequesterHeader(response, logEvent.Requester)
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
+		return
+	}
+
+	// Read the revoke request from the post body
 	type RevokeRequest struct {
 		CertificateDER core.JSONBuffer    `json:"certificate"`
 		Reason         *revocation.Reason `json:"reason"`
 	}
 	var revokeRequest RevokeRequest
-	if err := json.Unmarshal(body, &revokeRequest); err != nil {
-		logEvent.AddError(fmt.Sprintf("Couldn't unmarshal in revoke request %s", string(body)))
+	if err := json.Unmarshal(jwsBody, &revokeRequest); err != nil {
+		logEvent.AddError(fmt.Sprintf("Couldn't unmarshal in revoke request %s", string(jwsBody)))
 		wfe.sendError(response, logEvent, probs.Malformed("Unable to JSON parse revoke request"), err)
 		return
 	}
+	// Parse the provided certificate
 	providedCert, err := x509.ParseCertificate(revokeRequest.CertificateDER)
 	if err != nil {
 		logEvent.AddError("unable to parse revoke certificate DER: %s", err)
@@ -798,6 +1048,7 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *req
 		return
 	}
 
+	// Lookup the provided certificate in the DB by its serial number
 	serial := core.SerialToString(providedCert.SerialNumber)
 	logEvent.Extra["ProvidedCertificateSerial"] = serial
 	cert, err := wfe.SA.GetCertificate(ctx, serial)
@@ -812,11 +1063,14 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *req
 		wfe.sendError(response, logEvent, probs.ServerInternal("invalid parse of stored certificate"), err)
 		return
 	}
+
 	logEvent.Extra["RetrievedCertificateSerial"] = core.SerialToString(parsedCertificate.SerialNumber)
 	logEvent.Extra["RetrievedCertificateDNSNames"] = parsedCertificate.DNSNames
 	logEvent.Extra["RetrievedCertificateEmailAddresses"] = parsedCertificate.EmailAddresses
 	logEvent.Extra["RetrievedCertificateIPAddresses"] = parsedCertificate.IPAddresses
 
+	// Check the certificate status for the provided certificate to see if it is
+	// already revoked
 	certStatus, err := wfe.SA.GetCertificateStatus(ctx, serial)
 	if err != nil {
 		logEvent.AddError("unable to get certificate status: %s", err)
@@ -832,23 +1086,35 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *req
 		return
 	}
 
-	if !(core.KeyDigestEquals(requestKey, parsedCertificate.PublicKey) || registration.ID == cert.RegistrationID) {
-		valid, err := wfe.regHoldsAuthorizations(ctx, registration.ID, parsedCertificate.DNSNames)
+	// If the request was authenticated with an embedded JWK it must be the same
+	// key as the certificate to be revoked in order for the request to be
+	// considered properly authenticated
+	if authType == embeddedJWK && !(core.KeyDigestEquals(requestKey, parsedCertificate.PublicKey)) {
+		wfe.sendError(response, logEvent, probs.Unauthorized(
+			"JWK embedded in revocation request must be the same public key as the cert to be revoked"), nil)
+		return
+	} else if authType == embeddedKeyID {
+		// This should not happen since `lookupJWK` returns an error if the account doesn't exist
+		if reg == nil {
+			wfe.sendError(response, logEvent, probs.ServerInternal("No account for specified key ID exists"), err)
+			return
+		}
+		// Check if the account for the revocation request key ID is authorized for
+		// the names in the certificate to be revoked
+		valid, err := wfe.regHoldsAuthorizations(ctx, reg.ID, parsedCertificate.DNSNames)
 		if err != nil {
 			logEvent.AddError("regHoldsAuthorizations failed: %s", err)
 			wfe.sendError(response, logEvent, probs.ServerInternal("Failed to retrieve authorizations for names in certificate"), err)
 			return
 		}
 		if !valid {
-			wfe.sendError(response, logEvent,
-				probs.Unauthorized("Revocation request must be signed by private key of cert to be revoked, by the "+
-					"account key of the account that issued it, or by the account key of an account that holds valid "+
-					"authorizations for all names in the certificate."),
-				nil)
+			wfe.sendError(response, logEvent, probs.Unauthorized(
+				"The key ID specified in the revocation request does not hold valid authorizations for all names in the certificate to be revoked"), nil)
 			return
 		}
 	}
 
+	// Verify the revocation reason supplied is allowed
 	reason := revocation.Reason(0)
 	if revokeRequest.Reason != nil && wfe.AcceptRevocationReason {
 		if _, present := revocation.UserAllowedReasons[*revokeRequest.Reason]; !present {
@@ -859,7 +1125,8 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *req
 		reason = *revokeRequest.Reason
 	}
 
-	err = wfe.RA.RevokeCertificateWithReg(ctx, *parsedCertificate, reason, registration.ID)
+	// Revoke the certificate
+	err = wfe.RA.RevokeCertificateWithReg(ctx, *parsedCertificate, reason, regID)
 	if err != nil {
 		logEvent.AddError("failed to revoke certificate: %s", err)
 		wfe.sendError(response, logEvent, problemDetailsForError(err, "Failed to revoke certificate"), err)
@@ -885,7 +1152,7 @@ func (wfe *WebFrontEndImpl) logCsr(request *http.Request, cr core.CertificateReq
 // NewCertificate is used by clients to request the issuance of a cert for an
 // authorized identifier.
 func (wfe *WebFrontEndImpl) NewCertificate(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
-	body, _, reg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceNewCert)
+	body, _, _, reg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// verifyPOST handles its own setting of logEvent.Errors
@@ -932,7 +1199,7 @@ func (wfe *WebFrontEndImpl) NewCertificate(ctx context.Context, logEvent *reques
 		wfe.sendError(response, logEvent, probs.Malformed("Error parsing certificate request: %s", err), err)
 		return
 	}
-	wfe.logCsr(request, certificateRequest, reg)
+	wfe.logCsr(request, certificateRequest, *reg)
 	// Check that the key in the CSR is good. This will also be checked in the CA
 	// component, but we want to discard CSRs with bad keys as early as possible
 	// because (a) it's an easy check and we can save unnecessary requests and
@@ -1114,7 +1381,7 @@ func (wfe *WebFrontEndImpl) postChallenge(
 	authz core.Authorization,
 	challengeIndex int,
 	logEvent *requestEvent) {
-	body, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceChallenge)
+	body, _, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// verifyPOST handles its own setting of logEvent.Errors
@@ -1176,7 +1443,7 @@ func (wfe *WebFrontEndImpl) postChallenge(
 // Registration is used by a client to submit an update to their registration.
 func (wfe *WebFrontEndImpl) Registration(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
 
-	body, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceRegistration)
+	body, _, _, currReg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// verifyPOST handles its own setting of logEvent.Errors
@@ -1224,7 +1491,7 @@ func (wfe *WebFrontEndImpl) Registration(ctx context.Context, logEvent *requestE
 			wfe.sendError(response, logEvent, probs.Malformed("Invalid value provided for status field"), nil)
 			return
 		}
-		wfe.deactivateRegistration(ctx, currReg, response, request, logEvent)
+		wfe.deactivateRegistration(ctx, *currReg, response, request, logEvent)
 		return
 	}
 
@@ -1251,7 +1518,7 @@ func (wfe *WebFrontEndImpl) Registration(ctx context.Context, logEvent *requestE
 	// JSON to send via RPC to the RA.
 	update.Key = currReg.Key
 
-	updatedReg, err := wfe.RA.UpdateRegistration(ctx, currReg, update)
+	updatedReg, err := wfe.RA.UpdateRegistration(ctx, *currReg, update)
 	if err != nil {
 		logEvent.AddError("unable to update registration: %s", err)
 		wfe.sendError(response, logEvent, problemDetailsForError(err, "Unable to update registration"), err)
@@ -1273,7 +1540,7 @@ func (wfe *WebFrontEndImpl) Registration(ctx context.Context, logEvent *requestE
 }
 
 func (wfe *WebFrontEndImpl) deactivateAuthorization(ctx context.Context, authz *core.Authorization, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) bool {
-	body, _, reg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceAuthz)
+	body, _, _, reg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		wfe.sendError(response, logEvent, prob, nil)
@@ -1497,46 +1764,62 @@ func (wfe *WebFrontEndImpl) setCORSHeaders(response http.ResponseWriter, request
 
 // KeyRollover allows a user to change their signing key
 func (wfe *WebFrontEndImpl) KeyRollover(ctx context.Context, logEvent *requestEvent, response http.ResponseWriter, request *http.Request) {
-	body, _, reg, prob := wfe.verifyPOST(ctx, logEvent, request, true, core.ResourceKeyChange)
+	// Verify the outer JWS body with the current account key by looking up the
+	// account by key ID
+	body, _, outerJWS, reg, prob := wfe.verifyPOST(ctx, logEvent, request, wfe.lookupJWK)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		wfe.sendError(response, logEvent, prob, nil)
 		return
 	}
 
-	// Parse as JWS
-	newKey, parsedJWS, err := wfe.extractJWSKey(string(body))
-	if err != nil {
-		logEvent.AddError(err.Error())
-		wfe.sendError(response, logEvent, probs.Malformed(err.Error()), err)
+	// Parse the inner JWS from the body of the outer JWS
+	innerJWS, prob := wfe.parseJWS(string(body))
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
 		return
 	}
-	payload, err := parsedJWS.Verify(newKey)
+
+	// Extract the JWK from the inner JWS using the extractJWk key extractor. We
+	// do not use lookupJWS here because the new key is not associated with an
+	// account.
+	newKey, _, prob := wfe.extractJWK(ctx, request, logEvent, innerJWS)
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
+		return
+	}
+
+	// Verify that the inner JWS' signature by newKey is correct
+	innerPayload, err := innerJWS.Verify(newKey)
 	if err != nil {
 		logEvent.AddError("verification of the inner JWS with the inner JWK failed: %v", err)
 		wfe.sendError(response, logEvent, probs.Malformed("JWS verification error"), err)
 		return
 	}
+
+	// Unmarshal the inner JWS' key roll over request
 	var rolloverRequest struct {
-		NewKey  jose.JsonWebKey
+		NewKey  jose.JSONWebKey
 		Account string
 	}
-	err = json.Unmarshal(payload, &rolloverRequest)
+	err = json.Unmarshal(innerPayload, &rolloverRequest)
 	if err != nil {
 		logEvent.AddError("unable to JSON parse resource from JWS payload: %s", err)
 		wfe.sendError(response, logEvent, probs.Malformed("Request payload did not parse as JSON"), nil)
 		return
 	}
 
-	if wfe.relativeEndpoint(request, fmt.Sprintf("%s%d", regPath, reg.ID)) != rolloverRequest.Account {
+	// Check that the url header of the inner JWS matches the url header of the outer JWS
+	if prob := wfe.matchJWSURLs(outerJWS, innerJWS); prob != nil {
 		logEvent.AddError("incorrect account URL provided")
-		wfe.sendError(response, logEvent, probs.Malformed("Incorrect account URL provided in payload"), nil)
+		wfe.sendError(response, logEvent, prob, nil)
 		return
 	}
 
+	// Check that the "NewKey" from the inner JWS matches the key used to sign the inner JWS
 	keysEqual, err := core.PublicKeysEqual(rolloverRequest.NewKey.Key, newKey.Key)
 	if err != nil {
-		logEvent.AddError("unable to marshal new key: %s", err)
+		logEvent.AddError("unable to compare new key: %s", err)
 		wfe.sendError(response, logEvent, probs.Malformed("Unable to marshal new JWK"), nil)
 		return
 	}
@@ -1546,18 +1829,26 @@ func (wfe *WebFrontEndImpl) KeyRollover(ctx context.Context, logEvent *requestEv
 		return
 	}
 
-	// Update registration key
-	updatedReg, err := wfe.RA.UpdateRegistration(ctx, reg, core.Registration{Key: newKey})
-	if err != nil {
-		logEvent.AddError("unable to update registration: %s", err)
-		wfe.sendError(response, logEvent, problemDetailsForError(err, "Unable to update registration"), err)
+	// Check that the new key isn't already being used for an existing account
+	if existingAcct, err := wfe.SA.GetRegistrationByKey(ctx, newKey); err == nil {
+		response.Header().Set("Location", wfe.relativeEndpoint(request, fmt.Sprintf("%s%d", regPath, existingAcct.ID)))
+		wfe.sendError(response, logEvent, probs.Conflict("New JWK key is already in use for a different account"), err)
 		return
 	}
 
-	jsonReply, err := marshalIndent(updatedReg)
+	// Update account key
+	updatedAcct, err := wfe.RA.UpdateRegistration(ctx, *reg, core.Registration{Key: newKey})
 	if err != nil {
-		logEvent.AddError("unable to marshal updated registration: %s", err)
-		wfe.sendError(response, logEvent, probs.ServerInternal("Failed to marshal registration"), err)
+		logEvent.AddError("unable to update account with new key: %s", err)
+		wfe.sendError(response, logEvent, problemDetailsForError(err, "Unable to update account with new key"), err)
+		return
+	}
+
+	// Marshal & return the new account information
+	jsonReply, err := marshalIndent(updatedAcct)
+	if err != nil {
+		logEvent.AddError("unable to marshal updated account: %s", err)
+		wfe.sendError(response, logEvent, probs.ServerInternal("Failed to marshal account"), err)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")

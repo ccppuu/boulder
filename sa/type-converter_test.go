@@ -7,7 +7,7 @@ import (
 	"github.com/letsencrypt/boulder/core"
 	"github.com/letsencrypt/boulder/test"
 
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 )
 
 const JWK1JSON = `{

@@ -21,7 +21,7 @@ import (
 
 	"github.com/letsencrypt/boulder/core"
 
-	"gopkg.in/square/go-jose.v1"
+	"gopkg.in/square/go-jose.v2"
 )
 
 var (

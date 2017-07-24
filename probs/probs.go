@@ -17,6 +17,9 @@ const (
 	BadNonceProblem           = ProblemType("urn:acme:error:badNonce")
 	InvalidEmailProblem       = ProblemType("urn:acme:error:invalidEmail")
 	RejectedIdentifierProblem = ProblemType("urn:acme:error:rejectedIdentifier")
+
+	acmeV2NS                   = "urn:ietf:params:acme:error:"
+	AccountDoesNotExistProblem = ProblemType(acmeV2NS + "accountDoesNotExist")
 )
 
 // ProblemType defines the error types in the ACME protocol
@@ -196,6 +199,14 @@ func RateLimited(detail string) *ProblemDetails {
 func TLSError(detail string) *ProblemDetails {
 	return &ProblemDetails{
 		Type:       TLSProblem,
+		Detail:     detail,
+		HTTPStatus: http.StatusBadRequest,
+	}
+}
+
+func AccountDoesNotExist(detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Type:       AccountDoesNotExistProblem,
 		Detail:     detail,
 		HTTPStatus: http.StatusBadRequest,
 	}
