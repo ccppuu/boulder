@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"gopkg.in/go-gorp/gorp.v2"
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
 )

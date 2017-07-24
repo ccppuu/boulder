@@ -22,7 +22,7 @@ import (
 	"time"
 	"unicode"
 
-	jose "gopkg.in/square/go-jose.v1"
+	jose "gopkg.in/square/go-jose.v2"
 
 	blog "github.com/letsencrypt/boulder/log"
 )
