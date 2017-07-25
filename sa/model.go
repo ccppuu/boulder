@@ -255,10 +255,10 @@ func modelToRegistration(ri interface{}) (core.Registration, error) {
 	} else {
 		rm = ri.(*regModelv1)
 	}
-	k := &jose.JsonWebKey{}
+	k := &jose.JSONWebKey{}
 	err := json.Unmarshal(rm.Key, k)
 	if err != nil {
-		err = fmt.Errorf("unable to unmarshal JsonWebKey in db: %s", err)
+		err = fmt.Errorf("unable to unmarshal JSONWebKey in db: %s", err)
 		return core.Registration{}, err
 	}
 	var contact *[]string

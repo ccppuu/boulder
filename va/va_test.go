@@ -66,7 +66,7 @@ var TheKey = rsa.PrivateKey{
 	Primes:    []*big.Int{p, q},
 }
 
-var accountKey = &jose.JsonWebKey{Key: TheKey.Public()}
+var accountKey = &jose.JSONWebKey{Key: TheKey.Public()}
 
 var ident = core.AcmeIdentifier{Type: core.IdentifierDNS, Value: "localhost"}
 

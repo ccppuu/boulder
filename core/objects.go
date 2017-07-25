@@ -151,7 +151,7 @@ type Registration struct {
 	ID int64 `json:"id" db:"id"`
 
 	// Account key to which the details are attached
-	Key *jose.JsonWebKey `json:"key"`
+	Key *jose.JSONWebKey `json:"key"`
 
 	// Contact URIs
 	Contact *[]string `json:"contact,omitempty"`
@@ -251,7 +251,7 @@ type Challenge struct {
 
 // ExpectedKeyAuthorization computes the expected KeyAuthorization value for
 // the challenge.
-func (ch Challenge) ExpectedKeyAuthorization(key *jose.JsonWebKey) (string, error) {
+func (ch Challenge) ExpectedKeyAuthorization(key *jose.JSONWebKey) (string, error) {
 	if key == nil {
 		return "", fmt.Errorf("Cannot authorize a nil key")
 	}
