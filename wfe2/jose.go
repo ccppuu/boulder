@@ -216,13 +216,6 @@ func (wfe *WebFrontEndImpl) extractJWK(
 		return nil, nil, probs.Malformed("Invalid JWK in JWS header")
 	}
 
-	// If the key doesn't meet the GoodKey policy return a problem immediately
-	if err := wfe.keyPolicy.GoodKey(key); err != nil {
-		wfe.stats.Inc("Errors.JWKRejectedByGoodKey", 1)
-		logEvent.AddError("JWK in request was rejected by GoodKey: %s", err.Error())
-		return nil, nil, probs.Malformed(err.Error())
-	}
-
 	return key, nil, nil
 }
 
@@ -358,6 +351,15 @@ func (wfe *WebFrontEndImpl) verifyPOST(
 	if statName, err := checkAlgorithm(pubKey, jws); err != nil {
 		wfe.stats.Inc(statName, 1)
 		logEvent.AddError("checkAlgorithm failed: %q", err.Error())
+		return nil, nil, nil, nil, probs.Malformed(err.Error())
+	}
+
+	// If the key doesn't meet the GoodKey policy return a problem immediately
+	// This is perhaps unneccesary when the kx was == wfe.lookupJWK since the
+	// pubKey comes from our own vetted database but checking again won't hurt.
+	if err := wfe.keyPolicy.GoodKey(pubKey.Key); err != nil {
+		wfe.stats.Inc("Errors.JWKRejectedByGoodKey", 1)
+		logEvent.AddError("JWK in request was rejected by GoodKey: %s", err.Error())
 		return nil, nil, nil, nil, probs.Malformed(err.Error())
 	}
 
