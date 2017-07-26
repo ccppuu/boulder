@@ -1743,10 +1743,10 @@ func TestLogCsrPem(t *testing.T) {
 
 func TestLengthRequired(t *testing.T) {
 	wfe, _ := setupWFE(t)
-	_, _, _, prob := wfe.verifyPOST(ctx, newRequestEvent(), &http.Request{
+	_, _, _, _, prob := wfe.verifyPOST(ctx, newRequestEvent(), &http.Request{
 		Method: "POST",
 		URL:    mustParseURL("/"),
-	}, false, "resource")
+	}, wfe.lookupJWK)
 	test.Assert(t, prob != nil, "No error returned for request body missing Content-Length.")
 	test.AssertEquals(t, probs.MalformedProblem, prob.Type)
 	test.AssertEquals(t, http.StatusLengthRequired, prob.HTTPStatus)
@@ -1762,8 +1762,8 @@ func TestLogPayload(t *testing.T) {
 	wfe, _ := setupWFE(t)
 	event := newRequestEvent()
 	payload := `{"resource":"ima-payload"}`
-	_, _, _, err := wfe.verifyPOST(ctx, event, makePostRequest(signRequest(t,
-		payload, wfe.nonceService)), false, "ima-payload")
+	_, _, _, _, err := wfe.verifyPOST(ctx, event, makePostRequest(signRequest(t,
+		payload, wfe.nonceService)), wfe.extractJWK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1789,7 +1789,7 @@ func TestVerifyPOSTUsesStoredKey(t *testing.T) {
 	wfe.SA = &mockSADifferentStoredKey{mocks.NewStorageAuthority(fc)}
 	// signRequest signs with test1Key, but our special mock returns a
 	// registration with test2Key
-	_, _, _, err := wfe.verifyPOST(ctx, newRequestEvent(), makePostRequest(signRequest(t, `{"resource":"foo"}`, wfe.nonceService)), true, "foo")
+	_, _, _, _, err := wfe.verifyPOST(ctx, newRequestEvent(), makePostRequest(signRequest(t, `{"resource":"foo"}`, wfe.nonceService)), wfe.extractJWK)
 	test.AssertError(t, err, "No error returned when provided key differed from stored key.")
 }
 
@@ -1850,7 +1850,7 @@ func newRequestEvent() *requestEvent {
 func TestVerifyPOSTInvalidJWK(t *testing.T) {
 	badJWS := `{"signatures":[{"header":{"jwk":{"kty":"RSA","n":"","e":""}}}],"payload":""}`
 	wfe, _ := setupWFE(t)
-	_, _, _, prob := wfe.verifyPOST(ctx, newRequestEvent(), makePostRequest(badJWS), false, "resource")
+	_, _, _, _, prob := wfe.verifyPOST(ctx, newRequestEvent(), makePostRequest(badJWS), wfe.extractJWK)
 	test.Assert(t, prob != nil, "No error returned for request body with invalid JWS key.")
 	test.AssertEquals(t, probs.MalformedProblem, prob.Type)
 	test.AssertEquals(t, http.StatusBadRequest, prob.HTTPStatus)
