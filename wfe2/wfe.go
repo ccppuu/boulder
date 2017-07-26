@@ -441,29 +441,6 @@ func (wfe *WebFrontEndImpl) validPOSTRequest(
 	return nil
 }
 
-// validNonce checks a JWS' Nonce header to ensure it is one that the
-// nonceService knows about, otherwise a bad nonce problem is returned. The
-// provided logEvent is mutated to set the observed RequestNonce and any
-// associated errors. NOTE: this function assumes the JWS has already been
-// verified with the correct public key.
-func (wfe *WebFrontEndImpl) validNonce(jws *jose.JSONWebSignature, logEvent *requestEvent) *probs.ProblemDetails {
-	// validNonce is called after validPOSTRequest() and parseJWS() which
-	// defend against the incorrect number of signatures.
-	header := jws.Signatures[0].Header
-	nonce := header.Nonce
-	logEvent.RequestNonce = nonce
-	if len(nonce) == 0 {
-		wfe.stats.Inc("Errors.JWSMissingNonce", 1)
-		logEvent.AddError("JWS is missing an anti-replay nonce")
-		return probs.BadNonce("JWS has no anti-replay nonce")
-	} else if !wfe.nonceService.Valid(nonce) {
-		wfe.stats.Inc("Errors.JWSInvalidNonce", 1)
-		logEvent.AddError("JWS has an invalid anti-replay nonce: %q", nonce)
-		return probs.BadNonce(fmt.Sprintf("JWS has an invalid anti-replay nonce: %q", nonce))
-	}
-	return nil
-}
-
 // sendError sends an error response represented by the given ProblemDetails,
 // and, if the ProblemDetails.Type is ServerInternalProblem, audit logs the
 // internal ierr.

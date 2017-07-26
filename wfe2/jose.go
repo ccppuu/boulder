@@ -74,7 +74,6 @@ func checkAlgorithm(key *jose.JSONWebKey, parsedJws *jose.JSONWebSignature) (str
 type jwsAuthType int
 
 const (
-	unknownKey              = "No registration exists matching provided key"
 	embeddedJWK jwsAuthType = iota
 	embeddedKeyID
 	invalidAuthType
@@ -84,7 +83,10 @@ const (
 // the request being authenticated by the JWS is identified using an embedded
 // JWK or an embedded key ID. If no signatures are present, or mutually
 // exclusive authentication types are specified at the same time a problem is
-// returned.
+// returned. checkJWSAuthType is separate from enforceJWSAuthType so that
+// endpoints that need to handle both embedded JWK and embedded key ID requests
+// can determine which type of request they have and act accordingly (e.g.
+// acme v2 cert revocation).
 func checkJWSAuthType(jws *jose.JSONWebSignature) (jwsAuthType, *probs.ProblemDetails) {
 	// checkJWSAuthType is called after parseJWS() which defends against the
 	// incorrect number of signatures.
@@ -127,6 +129,29 @@ func (wfe *WebFrontEndImpl) enforceJWSAuthType(
 	return nil
 }
 
+// validNonce checks a JWS' Nonce header to ensure it is one that the
+// nonceService knows about, otherwise a bad nonce problem is returned. The
+// provided logEvent is mutated to set the observed RequestNonce and any
+// associated errors. NOTE: this function assumes the JWS has already been
+// verified with the correct public key.
+func (wfe *WebFrontEndImpl) validNonce(jws *jose.JSONWebSignature, logEvent *requestEvent) *probs.ProblemDetails {
+	// validNonce is called after validPOSTRequest() and parseJWS() which
+	// defend against the incorrect number of signatures.
+	header := jws.Signatures[0].Header
+	nonce := header.Nonce
+	logEvent.RequestNonce = nonce
+	if len(nonce) == 0 {
+		wfe.stats.Inc("Errors.JWSMissingNonce", 1)
+		logEvent.AddError("JWS is missing an anti-replay nonce")
+		return probs.BadNonce("JWS has no anti-replay nonce")
+	} else if !wfe.nonceService.Valid(nonce) {
+		wfe.stats.Inc("Errors.JWSInvalidNonce", 1)
+		logEvent.AddError("JWS has an invalid anti-replay nonce: %q", nonce)
+		return probs.BadNonce(fmt.Sprintf("JWS has an invalid anti-replay nonce: %q", nonce))
+	}
+	return nil
+}
+
 // parseJWS extracts a JSONWebSignature from an HTTP POST request's body. If
 // there is an error reading the JWS or if it has too few or too many
 // signatures, a problem is returned and the requestEvent is mutated to contain
@@ -141,7 +166,7 @@ func (wfe *WebFrontEndImpl) parseJWS(
 	}
 
 	// Read the POST request body's bytes. validPOSTRequest has already checked
-	// that the Body is non-nil
+	// that the body is non-nil
 	bodyBytes, err := ioutil.ReadAll(request.Body)
 	if err != nil {
 		wfe.stats.Inc("Errors.UnableToReadRequestBody", 1)
@@ -176,8 +201,8 @@ func (wfe *WebFrontEndImpl) parseJWS(
 // or by looking it up in a database based on the input. It may mutate the
 // provided requestEvent to add errors or account information. If applicable, an
 // associated account will be returned along with the key. If there is no
-// account (e.g. because this is a new-account request with an embedded JWK then
-// the returned account will be nil.
+// account (e.g. because this is a new-account request with an embedded JWK)
+// then the returned account will be nil.
 type keyExtractor func(
 	context.Context,
 	*http.Request,
@@ -286,7 +311,7 @@ func (wfe *WebFrontEndImpl) lookupJWK(
 }
 
 // validPOSTURL checks the JWS' URL header against the expected URL based on the
-// HTTP request. This prevents a JWS intended for one endpoint to be replayed
+// HTTP request. This prevents a JWS intended for one endpoint being replayed
 // against a different endpoint. It mutates the provided logEvent to capture any
 // errors.
 func (wfe *WebFrontEndImpl) validPOSTURL(
@@ -327,21 +352,25 @@ func (wfe *WebFrontEndImpl) validPOSTURL(
 	return nil
 }
 
-// TODO(@CPU) - Write a comment for this function
+// TODO(@cpu) - Write a new comment for this function
+// NOTE(@cpu) - This function now returns the JSONWebSignature that was parsed
+// from the request in addition to the JSONWebKey. This will allow the key
+// rollover endpoint to match the extra header URL of the embedded JWS to the
+// outer request's JWS
 func (wfe *WebFrontEndImpl) verifyPOST(
 	ctx context.Context,
 	logEvent *requestEvent,
 	request *http.Request,
 	kx keyExtractor) ([]byte, *jose.JSONWebKey, *jose.JSONWebSignature, *core.Registration, *probs.ProblemDetails) {
 
-	// Parse the JWS from the POST body
+	// Parse the JWS from the POST request
 	jws, body, prob := wfe.parseJWS(request, logEvent)
 	if prob != nil {
 		return nil, nil, nil, nil, prob
 	}
 
-	// Extract the JWK and associated account (if applicable) using the provided
-	// key extractor function
+	// Extract the JWK and associated account (if applicable) from the JWS using
+	// the provided key extractor function
 	pubKey, account, prob := kx(ctx, request, logEvent, jws)
 	if prob != nil {
 		return nil, nil, nil, nil, prob
