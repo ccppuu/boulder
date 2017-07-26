@@ -80,13 +80,13 @@ const (
 	invalidAuthType
 )
 
-// jwsAuthType examines a JWS' protected headers to determine if
+// checkJWSAuthType examines a JWS' protected headers to determine if
 // the request being authenticated by the JWS is identified using an embedded
 // JWK or an embedded key ID. If no signatures are present, or mutually
 // exclusive authentication types are specified at the same time a problem is
 // returned.
 func checkJWSAuthType(jws *jose.JSONWebSignature) (jwsAuthType, *probs.ProblemDetails) {
-	// jwsAuthType is called after parseJWS() which defends against the
+	// checkJWSAuthType is called after parseJWS() which defends against the
 	// incorrect number of signatures.
 	header := jws.Signatures[0].Header
 	// There must not be a Key ID *and* an embedded JWK
@@ -101,7 +101,7 @@ func checkJWSAuthType(jws *jose.JSONWebSignature) (jwsAuthType, *probs.ProblemDe
 	return invalidAuthType, nil
 }
 
-// enforceJWSAuthType checks a provided JWS has the provided auth type. If there
+// enforceJWSAuthType enforces a provided JWS has the provided auth type. If there
 // is an error determining the auth type or if it is not the expected auth type
 // then a problem is returned.
 func (wfe *WebFrontEndImpl) enforceJWSAuthType(
