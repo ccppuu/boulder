@@ -214,31 +214,18 @@ func (wfe *WebFrontEndImpl) validPOSTURL(
 	return nil
 }
 
-// parseJWS extracts a JSONWebSignature from an HTTP POST request's body. If
-// there is an error reading the JWS or it is unacceptable (e.g. too many/too
-// few signatures, presence of unprotected headers) a problem is returned,
-// otherwise the parsed *JSONWebSignature is returned.
-func (wfe *WebFrontEndImpl) parseJWS(request *http.Request) (*jose.JSONWebSignature, *probs.ProblemDetails) {
-	// Verify that the POST request has the expected headers
-	if prob := wfe.validPOSTRequest(request); prob != nil {
-		return nil, prob
-	}
-
-	// Read the POST request body's bytes. validPOSTRequest has already checked
-	// that the body is non-nil
-	bodyBytes, err := ioutil.ReadAll(request.Body)
-	if err != nil {
-		wfe.stats.Inc("Errors.UnableToReadRequestBody", 1)
-		return nil, probs.ServerInternal("unable to read request body")
-	}
-
+// parseJWS extracts a JSONWebSignature from a byte slice. If there is an error
+// reading the JWS or it is unacceptable (e.g. too many/too few signatures,
+// presence of unprotected headers) a problem is returned, otherwise the parsed
+// *JSONWebSignature is returned.
+func (wfe *WebFrontEndImpl) parseJWS(body []bytes) (*jose.JSONWebSignature, *probs.ProblemDetails) {
 	// Parse the raw JWS JSON to check that the unprotected Header field is not
 	// being used for a key ID or a JWK. This must be done prior to
 	// `jose.parseSigned` since it will strip away these headers.
 	var unprotected struct {
 		Header map[string]string
 	}
-	if err := json.Unmarshal(bodyBytes, &unprotected); err != nil {
+	if err := json.Unmarshal(body, &unprotected); err != nil {
 		wfe.stats.Inc("Errors.JWSParseError", 1)
 		return nil, probs.Malformed("Parse error reading JWS")
 	}
@@ -253,8 +240,8 @@ func (wfe *WebFrontEndImpl) parseJWS(request *http.Request) (*jose.JSONWebSignat
 
 	// Parse the JWS using go-jose and enforce that the expected one non-empty
 	// signature is present in the parsed JWS.
-	body := string(bodyBytes)
-	parsedJWS, err := jose.ParseSigned(body)
+	bodyStr := string(body)
+	parsedJWS, err := jose.ParseSigned(bodyStr)
 	if err != nil {
 		wfe.stats.Inc("Errors.JWSParseError", 1)
 		return nil, probs.Malformed("Parse error reading JWS")
@@ -273,6 +260,24 @@ func (wfe *WebFrontEndImpl) parseJWS(request *http.Request) (*jose.JSONWebSignat
 	}
 
 	return parsedJWS, nil
+}
+
+// parseJWSRequest extracts a JSONWebSignature from an HTTP POST request's body using parseJWS.
+func (wfe *WebFrontEndImpl) parseJWSRequest(request *http.Request) (*jose.JSONWebSignature, *probs.ProblemDetails) {
+	// Verify that the POST request has the expected headers
+	if prob := wfe.validPOSTRequest(request); prob != nil {
+		return nil, prob
+	}
+
+	// Read the POST request body's bytes. validPOSTRequest has already checked
+	// that the body is non-nil
+	bodyBytes, err := ioutil.ReadAll(request.Body)
+	if err != nil {
+		wfe.stats.Inc("Errors.UnableToReadRequestBody", 1)
+		return nil, probs.ServerInternal("unable to read request body")
+	}
+
+	return parseJWS(bodyBytes)
 }
 
 // extractJWK extracts a JWK from a provided JWS or returns a problem. It
@@ -433,7 +438,7 @@ func (wfe *WebFrontEndImpl) validPOSTForAccount(
 	ctx context.Context,
 	logEvent *requestEvent) ([]byte, *core.Registration, *probs.ProblemDetails) {
 	// Parse the JWS from the POST request
-	jws, prob := wfe.parseJWS(request)
+	jws, prob := wfe.parseJWSRequest(request)
 	if prob != nil {
 		return nil, nil, prob
 	}
@@ -453,27 +458,61 @@ func (wfe *WebFrontEndImpl) validPOSTForAccount(
 	return payload, account, nil
 }
 
-// validSelfAuthenticatedPOST checks that a given POST request has a valid JWS
-// verified with the JWK embedded in the JWS itself (e.g. self-authenticated).
-// This type of POST request is only used for creating new accounts or revoking a
-// certificate by signing the request with the private key corresponding to the
-// certificate's public key and embedding that public key in the JWS. All other
-// request should be validated using `validPOSTforAccount`. If the POST request
-// validates (e.g. the JWS is well formed, verifies with the JWK embedded in it,
-// the JWK meets policy/algorithm requirements, has the correct URL and includes a
-// valid nonce) then `validSelfAuthenticatedPOST` returns the validated JWS body
-// and the JWK that was embedded in the JWS. Otherwise if the valid JWS
-// conditions are not met or an error occurs only a problem is returned.
+// validSelfAuthenticatedPOST parses a JWS from the given HTTP POST request and
+// validates that the signature on the JWS is correct & made by the private key
+// corresponding to the public JWK embedded in the JWS. See
+// `validSelfAuthenticatedJWS` for more. This function should be used to ensure
+// a POST request is well formed, has a correct nonce/URL, and that the JWS
+// validates. It is suitable for using with endpoints like new-account where
+// there is not yet an account to use to validate the request and it must be
+// self-authenticated with an embedded JWK. Similarly it can be used for
+// key-rollover requests to validate the outter JWS that made the POST to
+// request a key change.
 func (wfe *WebFrontEndImpl) validSelfAuthenticatedPOST(
 	request *http.Request,
 	logEvent *requestEvent) ([]byte, *jose.JSONWebKey, *probs.ProblemDetails) {
 
 	// Parse the JWS from the POST request
-	jws, prob := wfe.parseJWS(request)
+	jws, prob := wfe.parseJWSRequest(request)
 	if prob != nil {
 		return nil, nil, prob
 	}
 
+	return wfe.validateSelfAuthenticatedPOST(innerJWS)
+}
+
+// validSelfAuthenticatedBody parses a JWS from the given bytes and validates
+// that the signature on the JWS is correct & made by the private key
+// corresponding to the public JWK emebdded in the JWS. See
+// `validSelfAuthenticatedJWS` for more. This function should only be used for
+// authenticating key rollover requests that contain an inner JWS with an
+// embedded JWK for the new key.
+func (wfe *WebFrontEndImpl) validSelfAuthenticatedBody(
+	body []byte,
+	logEvent *requestEvent) ([]byte, *jose.JSONWebKey, *probs.ProblemDetails) {
+
+	// Read the JWS from the payload body
+	innerJWS, prob := wfe.parseJWSRequest(body)
+	if prob != nil {
+		return nil, nil, prob
+	}
+
+	return wfe.validateSelfAuthenticatedPOST(innerJWS)
+}
+
+// validSelfAuthenticatedJWS checks that a given JWS verifies with the JWK
+// embedded in the JWS itself (e.g. is self-authenticated). This type of JWS
+// request is only used for creating new accounts, revoking certificates, or key
+// rollover operations where the key may not be associated with an account in
+// the usual fashion. All other requests should be validated using
+// `validPOSTforAccount`. If the JWS provided validates (e.g. the JWS is well
+// formed, verifies with the JWK embedded in it, the JWK meets policy/algorithm
+// requirements) then `validSelfAuthenticatedPOST` returns the validated JWS body
+// and the JWK that was embedded in the JWS. Otherwise if the valid JWS
+// conditions are not met or an error occurs only a problem is returned.
+func (wfe *WebFrontEndImpl) validateSelfAuthenticatedJWS(
+	jws *JSONWebSignature,
+	logEvent *requestEvent) ([]byte, *jose.JSONWebKey, *probs.ProblemDetails) {
 	// Extract the embedded JWK from the parsed JWS
 	pubKey, prob := wfe.extractJWK(jws)
 	if prob != nil {
