@@ -61,14 +61,6 @@
 			"Rev": "b92b544a91e70c91d9db888dfc9216197329df30"
 		},
 		{
-			"ImportPath": "golang.org/x/crypto/ed25519",
-			"Rev": "7c6cc321c680f03b9ef0764448e780704f486b51"
-		},
-		{
-			"ImportPath": "golang.org/x/crypto/ed25519/internal/edwards25519",
-			"Rev": "7c6cc321c680f03b9ef0764448e780704f486b51"
-		},
-		{
 			"ImportPath": "github.com/cloudflare/cfssl/ocsp",
 			"Comment": "1.2.0-195-gb92b544",
 			"Rev": "b92b544a91e70c91d9db888dfc9216197329df30"
@@ -256,6 +248,14 @@
 			"ImportPath": "github.com/weppos/publicsuffix-go/publicsuffix",
 			"Comment": "v0.3.2-21-g6787cd3",
 			"Rev": "6787cd3b348b18fab6371264ae5392cd8eca1723"
+		},
+		{
+			"ImportPath": "golang.org/x/crypto/ed25519",
+			"Rev": "7c6cc321c680f03b9ef0764448e780704f486b51"
+		},
+		{
+			"ImportPath": "golang.org/x/crypto/ed25519/internal/edwards25519",
+			"Rev": "7c6cc321c680f03b9ef0764448e780704f486b51"
 		},
 		{
 			"ImportPath": "golang.org/x/crypto/ocsp",
