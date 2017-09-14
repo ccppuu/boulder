@@ -125,6 +125,7 @@ type StorageGetter interface {
 	CountFQDNSets(ctx context.Context, window time.Duration, domains []string) (count int64, err error)
 	FQDNSetExists(ctx context.Context, domains []string) (exists bool, err error)
 	GetOrder(ctx context.Context, req *sapb.OrderRequest) (*corepb.Order, error)
+	GetOrdersByAuthz(ctx context.Context, req *sapb.OrdersByAuthzRequest) ([]*corepb.Order, error)
 }
 
 // StorageAdder are the Boulder SA's write/update methods
@@ -141,6 +142,7 @@ type StorageAdder interface {
 	DeactivateRegistration(ctx context.Context, id int64) error
 	DeactivateAuthorization(ctx context.Context, id string) error
 	NewOrder(ctx context.Context, order *corepb.Order) (*corepb.Order, error)
+	UpdateOrder(ctx context.Context, order *corepb.Order) (*corepb.Order, error)
 }
 
 // StorageAuthority interface represents a simple key/value

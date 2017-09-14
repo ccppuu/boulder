@@ -930,6 +930,12 @@ func (wfe *WebFrontEndImpl) postChallenge(
 		return
 	}
 
+	if updatedAuthorization.Status == core.StatusValid {
+		// Get the order for this authz from the SA
+		// Iterate the Authorizations in the order
+		// If everything is OK, tell the RA to fulfill the order
+	}
+
 	// assumption: UpdateAuthorization does not modify order of challenges
 	challenge := updatedAuthorization.Challenges[challengeIndex]
 	wfe.prepChallengeForDisplay(request, authz, &challenge)

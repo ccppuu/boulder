@@ -1293,7 +1293,7 @@ func (ssa *SQLStorageAuthority) authzForOrder(orderID int64) ([]string, error) {
 }
 
 // GetOrder is used to retrieve an already existing order object
-func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderRequest) (*corepb.Order, error) {
+func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderRequest) (core.Order, error) {
 	omObj, err := ssa.dbMap.Get(orderModel{}, *req.Id)
 	if err == sql.ErrNoRows || omObj == nil {
 		return nil, berrors.NotFoundError("no order found for ID %d", *req.Id)
@@ -1301,7 +1301,10 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 	if err != nil {
 		return nil, err
 	}
-	order := modelToOrder(omObj.(*orderModel))
+	order, err := modelToOrder(omObj.(*orderModel))
+	if err != nil {
+		return nil, err
+	}
 	authzIDs, err := ssa.authzForOrder(*order.Id)
 	if err != nil {
 		return nil, err
@@ -1310,5 +1313,59 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 		order.Authorizations = append(order.Authorizations, authzID)
 	}
 
+	return order, nil
+}
+
+func (ssa *SQLStorageAuthority) orderForAuthz(authzID string) ([]int64, error) {
+	var ids []int64
+	_, err := ssa.dbMap.Select(&ids, "SELECT orderID FROM orderToAuthz WHERE authzID = ?", authzID)
+	if err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func (ssa *SQLStorageAuthority) GetOrdersByAuthz(ctx context.Context, req *sapb.OrdersByAuthzRequest) ([]*core.Order, error) {
+	orderIDs, err := ssa.orderForAuthz(*req.Id)
+	if err == sql.ErrNoRows || len(orderIDs) == 0 {
+		return nil, berrors.NotFoundError("no orders found for ID %s", *req.Id)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var orders []*core.Order
+	for _, id := range orderIDs {
+		omObj, err := ssa.dbMap.Get(orderModel{}, id)
+		// We don't check for `sql.ErrNoRows` here and treat all errors as
+		// InternalServerError. All of the IDs from the join table are expected to
+		// exist or we're in an inconsistent state.
+		if err != nil {
+			return nil, berrors.InternalServerError("no order found for ID %d", id)
+		}
+		order := modelToOrder(omObj.(*orderModel))
+		orders = append(orders, order)
+	}
+	return orders, nil
+}
+
+// UpdateOrder stores an updated Order
+func (ssa *SQLStorageAuthority) UpdateOrder(ctx context.Context, order *core.Order) (*core.Order, error) {
+	omObj, err := ssa.dbMap.Get(orderModel{}, order.ID)
+	if err == sql.ErrNoRows || omObj == nil {
+		return nil, berrors.NotFoundError("no order found for ID %d", order.Id)
+	}
+	updatedOrder, err := orderToModel(order)
+	if err != nil {
+		return nil, err
+	}
+	affected, err := ssa.dbMap.Update(updatedOrder)
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		// We use InternalServerError here since we have already checked that the
+		// order exists
+		return nil, berrors.InternalServerError("no order found for ID %d", order.Id)
+	}
 	return order, nil
 }

@@ -1443,3 +1443,10 @@ func (ra *RegistrationAuthorityImpl) NewOrder(ctx context.Context, req *rapb.New
 
 	return storedOrder, nil
 }
+
+/*
+func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rapb.FinalizeOrderRequest) (*corepb.Order, error) {
+	// TODO(@cpu) - Issue the order, update it with the SA, return it.
+	return nil, fmt.Errorf("Not done yet")
+}
+*/

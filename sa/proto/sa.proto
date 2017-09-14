@@ -40,6 +40,8 @@ service StorageAuthority {
         rpc DeactivateAuthorization(AuthorizationID) returns (core.Empty) {}
         rpc NewOrder(core.Order) returns (core.Order) {}
         rpc GetOrder(OrderRequest) returns (core.Order) {}
+        rpc GetOrdersByAuthz(OrdersByAuthzRequest) returns (OrdersByAuthzResponse) {}
+        rpc UpdateOrder(core.Order) returns (core.Order) {}
 }
 
 message RegistrationID {
@@ -183,4 +185,12 @@ message RevokeAuthorizationsByDomainResponse {
 
 message OrderRequest {
         optional int64 id = 1;
+}
+
+message OrdersByAuthzRequest {
+        optional string id = 1;
+}
+
+message OrdersByAuthzResponse {
+        repeated core.Order orders = 1;
 }

@@ -419,7 +419,7 @@ func (sa *StorageAuthority) NewOrder(_ context.Context, order *corepb.Order) (*c
 	return order, nil
 }
 
-// Order is a mock
+// GetOrder is a mock
 func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) (*corepb.Order, error) {
 	if *req.Id == 2 {
 		return nil, berrors.NotFoundError("bad")
@@ -440,6 +440,17 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 		CertificateSerial: &serial,
 		Error:             []byte("error"),
 	}, nil
+}
+
+// GetOrdersByAuthz is a mock
+func (sa *StorageAuthority) GetOrdersByAuthz(_ context.Context, req *sapb.OrdersByAuthzRequest) ([]*corepb.Order, error) {
+	// TODO(@cpu): Mock GetOrdersByAuthz to do something
+	return nil, nil
+}
+
+// UpdateOrder is a mock
+func (sa *StorageAuthority) UpdateOrder(_ context.Context, order *corepb.Order) (*corepb.Order, error) {
+	return order, nil
 }
 
 // Publisher is a mock

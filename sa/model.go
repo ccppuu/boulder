@@ -10,7 +10,6 @@ import (
 	jose "gopkg.in/square/go-jose.v2"
 
 	"github.com/letsencrypt/boulder/core"
-	corepb "github.com/letsencrypt/boulder/core/proto"
 	"github.com/letsencrypt/boulder/probs"
 	"github.com/letsencrypt/boulder/revocation"
 )
@@ -332,16 +331,50 @@ type orderToAuthzModel struct {
 	AuthzID string
 }
 
-func modelToOrder(om *orderModel) *corepb.Order {
-	expires := om.Expires.UnixNano()
-	status := string(om.Status)
-	return &corepb.Order{
-		Id:                &om.ID,
-		RegistrationID:    &om.RegistrationID,
-		Expires:           &expires,
-		Csr:               om.CSR,
-		Error:             om.Error,
-		CertificateSerial: &om.CertificateSerial,
-		Status:            &status,
+func modelToOrder(om *orderModel) (*core.Order, error) {
+	order := &core.Order{
+		ID:                om.ID,
+		RegistrationID:    om.RegistrationID,
+		Expires:           om.Expires,
+		CSR:               om.CSR,
+		CertificateSerial: om.CertificateSerial,
+		Status:            core.AcmeStatus(om.Status),
 	}
+
+	if len(om.Error) > 0 {
+		var prob probs.ProblemDetails
+		err := json.Unmarshal(om.Error, &prob)
+		if err != nil {
+			return nil, err
+		}
+		order.Error = &prob
+	}
+
+	return order, nil
+}
+
+func orderToModel(order *core.Order) (*orderModel, error) {
+	// Check that the CSR won't be truncated storing it in the DB
+	if order.CSR != nil && len(order.CSR) > mediumBlobSize {
+		return nil, fmt.Errorf("Order object's CSR is too large to store in the database")
+	}
+	om := &orderModel{
+		ID:                order.ID,
+		RegistrationID:    order.RegistrationID,
+		Expires:           order.Expires,
+		CSR:               order.CSR,
+		CertificateSerial: order.CertificateSerial,
+		Status:            order.Status,
+	}
+	if order.Error != nil {
+		errJSON, err := json.Marshal(order.Error)
+		if err != nil {
+			return nil, err
+		}
+		if len(errJSON) > mediumBlobSize {
+			return nil, fmt.Errorf("Order object's error is too large to store in the database")
+		}
+		om.Error = errJSON
+	}
+	return om, nil
 }

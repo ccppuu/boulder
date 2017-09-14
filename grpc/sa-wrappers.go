@@ -490,6 +490,28 @@ func (sas StorageAuthorityClientWrapper) GetOrder(ctx context.Context, request *
 	return resp, nil
 }
 
+func (sas StorageAuthorityClientWrapper) GetOrdersByAuthz(ctx context.Context, request *sapb.OrdersByAuthzRequest) ([]*corepb.Order, error) {
+	resp, err := sas.inner.GetOrdersByAuthz(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Orders == nil {
+		return nil, errIncompleteResponse
+	}
+	return resp.Orders, nil
+}
+
+func (sas StorageAuthorityClientWrapper) UpdateOrder(ctx context.Context, request *corepb.Order) (*corepb.Order, error) {
+	resp, err := sas.inner.UpdateOrder(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Id == nil || resp.RegistrationID == nil || resp.Expires == nil || resp.Csr == nil || resp.Authorizations == nil || resp.Status == nil {
+		return nil, errIncompleteResponse
+	}
+	return resp, nil
+}
+
 // StorageAuthorityServerWrapper is the gRPC version of a core.ServerAuthority server
 type StorageAuthorityServerWrapper struct {
 	inner *sa.SQLStorageAuthority
@@ -940,4 +962,33 @@ func (sas StorageAuthorityServerWrapper) GetOrder(ctx context.Context, request *
 	}
 
 	return sas.inner.GetOrder(ctx, request)
+}
+
+func (sas StorageAuthorityServerWrapper) GetOrdersByAuthz(ctx context.Context, request *sapb.OrdersByAuthzRequest) (*sapb.OrdersByAuthzResponse, error) {
+	if request == nil || request.Id == nil {
+		return nil, errIncompleteRequest
+	}
+
+	orders, err := sas.inner.GetOrdersByAuthz(ctx, request)
+
+	resp := &sapb.OrdersByAuthzResponse{}
+	for _, order := range orders {
+		orderPB, err := OrderToPB(*order)
+		if err != nil {
+			return nil, err
+		}
+		// Make a copy of k because it will be reassigned with each loop.
+		kCopy := k
+		resp.Valid = append(resp.Valid, &sapb.ValidAuthorizations_MapElement{Domain: &kCopy, Authz: authzPB})
+	}
+
+	return resp, nil
+}
+
+func (sas StorageAuthorityServerWrapper) UpdateOrder(ctx context.Context, request *corepb.Order) (*corepb.Order, error) {
+	if request == nil || request.RegistrationID == nil || request.Expires == nil || request.Csr == nil || request.Authorizations == nil || request.Status == nil {
+		return nil, errIncompleteRequest
+	}
+
+	return sas.inner.UpdateOrder(ctx, request)
 }

@@ -464,3 +464,8 @@ func pbToCert(pb *corepb.Certificate) core.Certificate {
 		Expires:        time.Unix(0, *pb.Expires),
 	}
 }
+
+func orderToPb(order core.Order) *corepb.Order {
+	expires := order.Expires.UnixNano()
+	return &corepb.Order{}
+}
