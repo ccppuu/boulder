@@ -5,7 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"crypto/x509/pkix"
+	//"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -1918,6 +1918,8 @@ func TestRecheckCAAFail(t *testing.T) {
 	}
 }
 
+// TODO(@cpu) - Test `FinalizeOrder`
+
 func TestNewOrder(t *testing.T) {
 	// Only run under test/config-next config where 20170731115209_AddOrders.sql
 	// has been applied
@@ -1929,37 +1931,46 @@ func TestNewOrder(t *testing.T) {
 	defer cleanUp()
 	ra.orderLifetime = time.Hour
 
-	req := &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: "a.com"},
-		DNSNames: []string{"b.com", "b.com", "C.COM"},
-	}
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	test.AssertNotError(t, err, "Failed to generate test key")
-	csr, err := x509.CreateCertificateRequest(rand.Reader, req, key)
-	test.AssertNotError(t, err, "Failed to generate test CSR")
+	// TODO(@cpu) - Test the names stuff that was changed for new-order
+
+	/*
+		req := &x509.CertificateRequest{
+			Subject:  pkix.Name{CommonName: "a.com"},
+			DNSNames: []string{"b.com", "b.com", "C.COM"},
+		}
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		test.AssertNotError(t, err, "Failed to generate test key")
+		csr, err := x509.CreateCertificateRequest(rand.Reader, req, key)
+		test.AssertNotError(t, err, "Failed to generate test CSR")
+	*/
 
 	id := int64(1)
 	order, err := ra.NewOrder(context.Background(), &rapb.NewOrderRequest{
 		RegistrationID: &id,
-		Csr:            csr,
+		Names:          []string{"b.com", "a.com", "C.COM"},
 	})
 	test.AssertNotError(t, err, "ra.NewOrder failed")
 	test.AssertEquals(t, *order.RegistrationID, int64(1))
 	test.AssertEquals(t, *order.Expires, fc.Now().Add(time.Hour).UnixNano())
-	test.AssertByteEquals(t, order.Csr, csr)
+	test.AssertEquals(t, len(order.Names), 3)
+
+	// TODO(@cpu): Fix test for order names
+	//test.AssertByteEquals(t, order.Csr, csr)
 	test.AssertEquals(t, *order.Id, int64(1))
 	test.AssertEquals(t, len(order.Authorizations), 3)
 
 	// Reuse all existing authorizations
 	orderB, err := ra.NewOrder(context.Background(), &rapb.NewOrderRequest{
 		RegistrationID: &id,
-		Csr:            csr,
+		Names:          []string{"b.com", "a.com", "C.COM"},
 	})
 	test.AssertNotError(t, err, "ra.NewOrder failed")
 	test.AssertEquals(t, *orderB.RegistrationID, int64(1))
 	test.AssertEquals(t, *orderB.Expires, fc.Now().Add(time.Hour).UnixNano())
-	test.AssertByteEquals(t, orderB.Csr, csr)
+	//test.AssertByteEquals(t, orderB.Csr, csr)
+	// TODO(@cpu): Fix test for order names
 	test.AssertEquals(t, *orderB.Id, int64(2))
+	test.AssertEquals(t, len(orderB.Names), 3)
 	test.AssertEquals(t, len(orderB.Authorizations), 3)
 	sort.Strings(order.Authorizations)
 	sort.Strings(orderB.Authorizations)
@@ -1967,17 +1978,19 @@ func TestNewOrder(t *testing.T) {
 
 	// Reuse all of the existing authorizations from the previous order and
 	// add a new one
-	req.DNSNames = append(req.DNSNames, "d.com")
-	csr, err = x509.CreateCertificateRequest(rand.Reader, req, key)
+	//req.DNSNames = append(req.DNSNames, "d.com")
+	//csr, err = x509.CreateCertificateRequest(rand.Reader, req, key)
 	test.AssertNotError(t, err, "Failed to generate test CSR")
 	orderC, err := ra.NewOrder(context.Background(), &rapb.NewOrderRequest{
 		RegistrationID: &id,
-		Csr:            csr,
+		Names:          []string{"b.com", "a.com", "C.COM", "d.com"},
 	})
 	test.AssertNotError(t, err, "ra.NewOrder failed")
 	test.AssertEquals(t, *orderC.RegistrationID, int64(1))
 	test.AssertEquals(t, *orderC.Expires, fc.Now().Add(time.Hour).UnixNano())
-	test.AssertByteEquals(t, orderC.Csr, csr)
+	//test.AssertByteEquals(t, orderC.Csr, csr)
+	// TODO(@cpu): Fix test for order names
+	test.AssertEquals(t, len(order.Names), 4)
 	test.AssertEquals(t, *orderC.Id, int64(3))
 	test.AssertEquals(t, len(orderC.Authorizations), 4)
 	// Abuse the order of the queries used to extract the reused authorizations

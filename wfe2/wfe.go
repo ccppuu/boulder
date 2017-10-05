@@ -53,6 +53,8 @@ const (
 	rolloverPath   = "/acme/key-change"
 	newOrderPath   = "/acme/new-order"
 	orderPath      = "/acme/order/"
+	// TODO(@cpu): This should probably be a subdir of orderPath
+	finalizeOrderPath = "/acme/finalize-order/"
 )
 
 // WebFrontEndImpl provides all the logic for Boulder's web-facing interface,
@@ -314,6 +316,7 @@ func (wfe *WebFrontEndImpl) Handler() http.Handler {
 	wfe.HandleFunc(m, rolloverPath, wfe.KeyRollover, "POST")
 	wfe.HandleFunc(m, newOrderPath, wfe.NewOrder, "POST")
 	wfe.HandleFunc(m, orderPath, wfe.Order, "GET")
+	wfe.HandleFunc(m, finalizeOrderPath, wfe.FinalizeOrder, "POST")
 	// We don't use our special HandleFunc for "/" because it matches everything,
 	// meaning we can wind up returning 405 when we mean to return 404. See
 	// https://github.com/letsencrypt/boulder/issues/717
@@ -1373,8 +1376,9 @@ func (wfe *WebFrontEndImpl) addIssuingCertificateURLs(response http.ResponseWrit
 type orderJSON struct {
 	Status         core.AcmeStatus
 	Expires        time.Time
-	CSR            core.JSONBuffer
+	Names          []string
 	Authorizations []string
+	FinalizeURL    string
 	Certificate    string `json:",omitempty"`
 	Error          string `json:",omitempty"`
 }
@@ -1385,7 +1389,7 @@ func (wfe *WebFrontEndImpl) NewOrder(
 	logEvent *web.RequestEvent,
 	response http.ResponseWriter,
 	request *http.Request) {
-	body, _, acct, prob := wfe.validPOSTForAccount(request, ctx, logEvent)
+	_, _, acct, prob := wfe.validPOSTForAccount(request, ctx, logEvent)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// validPOSTForAccount handles its own setting of logEvent.Errors
@@ -1393,12 +1397,113 @@ func (wfe *WebFrontEndImpl) NewOrder(
 		return
 	}
 
-	var rawCSR core.RawCertificateRequest
-	// The optional fields NotAfter and NotBefore are ignored if present
-	// in the request
-	err := json.Unmarshal(body, &rawCSR)
+	order, err := wfe.RA.NewOrder(ctx, &rapb.NewOrderRequest{
+		RegistrationID: &acct.ID,
+	})
 	if err != nil {
-		wfe.sendError(response, logEvent, probs.Malformed("Error unmarshaling order request"), err)
+		wfe.sendError(response, logEvent, web.ProblemDetailsForError(err, "Error creating new order"), err)
+		return
+	}
+	finalizeURL := wfe.relativeEndpoint(request,
+		fmt.Sprintf("%s%d/%d", finalizeOrderPath, acct.ID, *order.Id))
+	orderURL := wfe.relativeEndpoint(request,
+		fmt.Sprintf("%s%d/%d", orderPath, acct.ID, *order.Id))
+	respObj := orderJSON{
+		Status:         core.AcmeStatus(*order.Status),
+		Expires:        time.Unix(0, *order.Expires).UTC(),
+		Names:          order.Names,
+		Authorizations: make([]string, len(order.Authorizations)),
+		FinalizeURL:    finalizeURL,
+	}
+	for i, authzID := range order.Authorizations {
+		respObj.Authorizations[i] = wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", authzPath, authzID))
+	}
+
+	response.Header().Set("Location", orderURL)
+
+	err = wfe.writeJsonResponse(response, logEvent, http.StatusCreated, respObj)
+	if err != nil {
+		wfe.sendError(response, logEvent, probs.ServerInternal("Error marshaling order"), err)
+		return
+	}
+}
+
+// TODO(@cpu) - Comment
+func (wfe *WebFrontEndImpl) FinalizeOrder(
+	ctx context.Context,
+	logEvent *web.RequestEvent,
+	response http.ResponseWriter,
+	request *http.Request) {
+	// Validate the POST body signature and get the authenticated account for this
+	// finalize order request
+	body, _, acct, prob := wfe.validPOSTForAccount(request, ctx, logEvent)
+	addRequesterHeader(response, logEvent.Requester)
+	if prob != nil {
+		wfe.sendError(response, logEvent, prob, nil)
+		return
+	}
+
+	// The path components include an account ID and an order ID
+	fields := strings.SplitN(request.URL.Path, "/", 2)
+	if len(fields) != 2 {
+		wfe.sendError(response, logEvent, probs.Malformed("Invalid request path"), nil)
+		return
+	}
+
+	// The account ID must be a valid int
+	acctID, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		wfe.sendError(response, logEvent, probs.Malformed("Invalid account ID"), err)
+		return
+	}
+
+	// The account ID from the path must match the authenticated account's ID
+	if acctID != acct.ID {
+		wfe.sendError(response, logEvent,
+			probs.Malformed("Account ID from JWS does not match account ID in path"), nil)
+	}
+
+	// The account must have agreed to the subscriber agreement to finalize an
+	// order since it will result in the issuance of a certificate.
+	// Any version of the agreement is acceptable here. Version match is enforced in
+	// wfe.Registration when agreeing the first time. Agreement updates happen
+	// by mailing subscribers and don't require a registration update.
+	if acct.Agreement == "" {
+		wfe.sendError(response, logEvent, probs.Unauthorized("Must agree to subscriber agreement before any further actions"), nil)
+		return
+	}
+
+	// The order ID must be a valid int
+	orderID, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		wfe.sendError(response, logEvent, probs.Malformed("Invalid order ID"), err)
+		return
+	}
+
+	order, err := wfe.SA.GetOrder(ctx, &sapb.OrderRequest{Id: &orderID})
+	if err != nil {
+		// The order must exist to be finalized
+		if berrors.Is(err, berrors.NotFound) {
+			wfe.sendError(response, logEvent, probs.NotFound(fmt.Sprintf("No order for ID %d", orderID)), err)
+			return
+		}
+		// Anything other than berrors.NotFound indicates an internal problem
+		wfe.sendError(response, logEvent, probs.ServerInternal(fmt.Sprintf("Failed to retrieve order for ID %d", orderID)), err)
+		return
+	}
+
+	// If there is already a certificate serial for this order then it has been
+	// finalized and there is nothing left to do
+	if *order.CertificateSerial != "" {
+		wfe.sendError(response, logEvent, probs.Malformed("Order is already finalized"), nil)
+		return
+	}
+
+	// The authenticated finalize message body should be an encoded CSR
+	var rawCSR core.RawCertificateRequest
+	err = json.Unmarshal(body, &rawCSR)
+	if err != nil {
+		wfe.sendError(response, logEvent, probs.Malformed("Error unmarshaling finalize order request"), err)
 		return
 	}
 	// Assuming a properly formatted CSR there should be two four byte SEQUENCE
@@ -1419,36 +1524,48 @@ func (wfe *WebFrontEndImpl) NewOrder(
 	}
 
 	// Check for a malformed CSR early to avoid unnecessary RPCs
-	_, err = x509.ParseCertificateRequest(rawCSR.CSR)
+	csr, err := x509.ParseCertificateRequest(rawCSR.CSR)
 	if err != nil {
 		wfe.sendError(response, logEvent, probs.Malformed("Error parsing certificate request: %s", err), err)
 		return
 	}
 
-	order, err := wfe.RA.NewOrder(ctx, &rapb.NewOrderRequest{
-		RegistrationID: &acct.ID,
-		Csr:            rawCSR.CSR,
+	certificateRequest := core.CertificateRequest{Bytes: rawCSR.CSR}
+	certificateRequest.CSR = csr
+	wfe.logCsr(request, certificateRequest, *acct)
+
+	// Check that the key in the CSR is good. This will also be checked in the CA
+	// component, but we want to discard CSRs with bad keys as early as possible
+	// because (a) it's an easy check and we can save unnecessary requests and
+	// bytes on the wire, and (b) the CA logs all rejections as audit events, but
+	// a bad key from the client is just a malformed request and doesn't need to
+	// be audited.
+	if err := wfe.keyPolicy.GoodKey(certificateRequest.CSR.PublicKey); err != nil {
+		wfe.sendError(response, logEvent, probs.Malformed("Invalid key in certificate request :: %s", err), err)
+		return
+	}
+	logEvent.Extra["CSRDNSNames"] = certificateRequest.CSR.DNSNames
+	logEvent.Extra["CSREmailAddresses"] = certificateRequest.CSR.EmailAddresses
+	logEvent.Extra["CSRIPAddresses"] = certificateRequest.CSR.IPAddresses
+
+	// Inc CSR signature algorithm counter
+	//wfe.csrSignatureAlgs.With(prometheus.Labels{"type": certificateRequest.CSR.SignatureAlgorithm.String()}).Inc()
+	// TODO(@cpu): Bring wfe.csrSignatureAlgs over to wfe2
+
+	err = wfe.RA.FinalizeOrder(ctx, &rapb.FinalizeOrderRequest{
+		AcctID: &acct.ID,
+		Csr:    rawCSR.CSR,
+		Order:  order,
 	})
 	if err != nil {
-		wfe.sendError(response, logEvent, web.ProblemDetailsForError(err, "Error creating new order"), err)
+		wfe.sendError(response, logEvent, web.ProblemDetailsForError(err, "Error finalizing order"), err)
 		return
 	}
 
-	respObj := orderJSON{
-		Status:         core.AcmeStatus(*order.Status),
-		Expires:        time.Unix(0, *order.Expires).UTC(),
-		CSR:            core.JSONBuffer(order.Csr),
-		Authorizations: make([]string, len(order.Authorizations)),
-	}
-	for i, authzID := range order.Authorizations {
-		respObj.Authorizations[i] = wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", authzPath, authzID))
-	}
-
-	response.Header().Set("Location", wfe.relativeEndpoint(request, fmt.Sprintf("%s%d/%d", orderPath, acct.ID, *order.Id)))
-
-	err = wfe.writeJsonResponse(response, logEvent, http.StatusCreated, respObj)
+	// TODO(@cpu): Should this write the order object in response, or nothing, or this empty JSON body?
+	err = wfe.writeJsonResponse(response, logEvent, http.StatusOK, `{}`)
 	if err != nil {
-		wfe.sendError(response, logEvent, probs.ServerInternal("Error marshaling order"), err)
+		wfe.sendError(response, logEvent, probs.ServerInternal("Unable to write finalize order response"), nil)
 		return
 	}
 }
@@ -1485,14 +1602,18 @@ func (wfe *WebFrontEndImpl) Order(ctx context.Context, logEvent *web.RequestEven
 		wfe.sendError(response, logEvent, probs.NotFound(fmt.Sprintf("No order found for account ID %d", acctID)), nil)
 		return
 	}
-
+	finalizeURL := wfe.relativeEndpoint(request,
+		fmt.Sprintf("%s%d/%d", finalizeOrderPath, acctID, *order.Id))
+	certURL := wfe.relativeEndpoint(request,
+		fmt.Sprintf("%s%s", certPath, *order.CertificateSerial))
 	respObj := orderJSON{
 		Status:         core.AcmeStatus(*order.Status),
 		Expires:        time.Unix(0, *order.Expires).UTC(),
-		CSR:            core.JSONBuffer(order.Csr),
+		Names:          order.Names,
+		FinalizeURL:    finalizeURL,
 		Authorizations: make([]string, len(order.Authorizations)),
-		Certificate:    wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", certPath, *order.CertificateSerial)),
 		Error:          string(order.Error),
+		Certificate:    certURL,
 	}
 	for i, authzID := range order.Authorizations {
 		respObj.Authorizations[i] = wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", authzPath, authzID))

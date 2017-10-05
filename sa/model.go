@@ -310,7 +310,7 @@ type orderModel struct {
 	ID                int64
 	RegistrationID    int64
 	Expires           time.Time
-	CSR               []byte
+	Names             []string
 	Error             []byte
 	CertificateSerial string
 	Status            core.AcmeStatus
@@ -328,7 +328,7 @@ func modelToOrder(om *orderModel) *corepb.Order {
 		Id:                &om.ID,
 		RegistrationID:    &om.RegistrationID,
 		Expires:           &expires,
-		Csr:               om.CSR,
+		Names:             om.Names,
 		Error:             om.Error,
 		CertificateSerial: &om.CertificateSerial,
 		Status:            &status,

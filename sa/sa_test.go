@@ -1293,7 +1293,7 @@ func TestNewOrder(t *testing.T) {
 	order, err := sa.NewOrder(context.Background(), &corepb.Order{
 		RegistrationID: &i,
 		Expires:        &i,
-		Csr:            []byte{0, 1, 2},
+		Names:          []string{"example.com"},
 		Authorizations: []string{"a", "b", "c"},
 		Status:         &status,
 	})
@@ -1324,7 +1324,7 @@ func TestOrder(t *testing.T) {
 	order, err := sa.NewOrder(context.Background(), &corepb.Order{
 		RegistrationID:    &i,
 		Expires:           &i,
-		Csr:               []byte{0, 1, 2},
+		Names:             []string{"example.com"},
 		Authorizations:    []string{"a"},
 		Status:            &status,
 		CertificateSerial: &empty,

@@ -419,6 +419,11 @@ func (sa *StorageAuthority) NewOrder(_ context.Context, order *corepb.Order) (*c
 	return order, nil
 }
 
+// UpdateOrder is a mock
+func (sa *StorageAuthority) UpdateOrder(_ context.Context, order *corepb.Order) (*corepb.Order, error) {
+	return order, nil
+}
+
 // Order is a mock
 func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) (*corepb.Order, error) {
 	if *req.Id == 2 {
@@ -434,12 +439,17 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 		Id:                req.Id,
 		RegistrationID:    &one,
 		Expires:           &zero,
-		Csr:               []byte{1, 3, 3, 7},
+		Names:             []string{"example.com"},
 		Status:            &status,
 		Authorizations:    []string{"hello"},
 		CertificateSerial: &serial,
 		Error:             []byte("error"),
 	}, nil
+}
+
+func (sa *StorageAuthority) GetOrderAuthorizations(_ context.Context, req *sapb.OrderAuthorizationsRequest) (map[string]*core.Authorization, error) {
+	// TODO(@cpu) - Mock this somehow
+	return nil, nil
 }
 
 // GetAuthorizations is a mock
