@@ -1255,7 +1255,8 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 	return req, nil
 }
 
-// TODO(@cpu) - Document
+// UpdateOrder persists a changed *corepb.Order to the database returning it on
+// success or an error if unsuccessful.
 func (ssa *SQLStorageAuthority) UpdateOrder(ctx context.Context, req *corepb.Order) (*corepb.Order, error) {
 	order := &orderModel{
 		RegistrationID:    *req.RegistrationID,

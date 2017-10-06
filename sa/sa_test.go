@@ -1308,6 +1308,44 @@ func TestNewOrder(t *testing.T) {
 	test.AssertDeepEquals(t, authzIDs, []string{"a", "b", "c"})
 }
 
+func TestUpdateOrder(t *testing.T) {
+	// Only run under test/config-next config where 20170731115209_AddOrders.sql
+	// has been applied
+	if os.Getenv("BOULDER_CONFIG_DIR") != "test/config-next" {
+		return
+	}
+
+	sa, _, cleanup := initSA(t)
+	defer cleanup()
+
+	i := int64(1337)
+	status := string(core.StatusPending)
+	order := &corepb.Order{
+		RegistrationID: &i,
+		Expires:        &i,
+		Names:          []string{"example.com"},
+		Authorizations: []string{"a", "b", "c"},
+		Status:         &status,
+	}
+
+	// Add a new order with an empty certificate serial
+	_, err := sa.NewOrder(context.Background(), order)
+	test.AssertNotError(t, err, "NewOrder failed")
+
+	// Update the order with a non-empty certificate serial
+	serial := "eat.serial.for.breakfast"
+	order.CertificateSerial = &serial
+	_, err = sa.UpdateOrder(context.Background(), order)
+	test.AssertNotError(t, err, "UpdateOrder failed")
+
+	// Read the order by ID from the DB to check the certificate serial was correctly updated
+	updatedOrder, err := sa.GetOrder(
+		context.Background(),
+		&sapb.OrderRequest{Id: &i})
+	test.AssertNotError(t, err, "GetOrder failed")
+	test.AssertEquals(t, updatedOrder.CertificateSerial, order.CertificateSerial)
+}
+
 func TestOrder(t *testing.T) {
 	// Only run under test/config-next config where 20170731115209_AddOrders.sql
 	// has been applied
