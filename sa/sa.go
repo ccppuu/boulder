@@ -1219,7 +1219,6 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 	order := &orderModel{
 		RegistrationID: *req.RegistrationID,
 		Expires:        time.Unix(0, *req.Expires),
-		Names:          req.Names,
 		Status:         core.AcmeStatus(*req.Status),
 	}
 
@@ -1246,6 +1245,18 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 		}
 	}
 
+	for _, name := range req.Names {
+		reqdName := &requestedNameModel{
+			OrderID:      order.ID,
+			ReversedName: ReverseName(name),
+		}
+		err = tx.Insert(reqdName)
+		if err != nil {
+			err = Rollback(tx, err)
+			return nil, err
+		}
+	}
+
 	err = tx.Commit()
 	if err != nil {
 		return nil, err
@@ -1259,9 +1270,9 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 // success or an error if unsuccessful.
 func (ssa *SQLStorageAuthority) UpdateOrder(ctx context.Context, req *corepb.Order) (*corepb.Order, error) {
 	order := &orderModel{
+		ID:                *req.Id,
 		RegistrationID:    *req.RegistrationID,
 		Expires:           time.Unix(0, *req.Expires),
-		Names:             req.Names,
 		Status:            core.AcmeStatus(*req.Status),
 		CertificateSerial: *req.CertificateSerial,
 	}
@@ -1299,6 +1310,20 @@ func (ssa *SQLStorageAuthority) authzForOrder(orderID int64) ([]string, error) {
 	return ids, nil
 }
 
+// namesForOrder finds all of the requested names associated with an order. The
+// names are returned in their reversed form (see `sa.ReverseName`).
+func (ssa *SQLStorageAuthority) namesForOrder(orderID int64) ([]string, error) {
+	var reversedNames []string
+	_, err := ssa.dbMap.Select(&reversedNames, `
+	SELECT reversedName
+	FROM requestedNames
+	WHERE orderID = ?`, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return reversedNames, nil
+}
+
 // GetOrder is used to retrieve an already existing order object
 func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderRequest) (*corepb.Order, error) {
 	omObj, err := ssa.dbMap.Get(orderModel{}, *req.Id)
@@ -1317,6 +1342,12 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 		order.Authorizations = append(order.Authorizations, authzID)
 	}
 
+	names, err := ssa.namesForOrder(*order.Id)
+	if err != nil {
+		return nil, err
+	}
+	order.Names = names
+
 	return order, nil
 }
 
@@ -1332,11 +1363,11 @@ func (ssa *SQLStorageAuthority) GetOrderAuthorizations(
 		&auths,
 		fmt.Sprintf(`SELECT %s FROM %s AS authz
 	LEFT JOIN orderToAuthz
+	ON authz.ID = orderToAuthz.authzID
 	WHERE authz.registrationID = ? AND
 	authz.expires > ? AND
 	authz.status = ? AND
-	orderToAuthz.orderID = ? AND
-	authz.ID = orderToAuthz.authzID`, authzFields, authorizationTable),
+	orderToAuthz.orderID = ?`, authzFields, authorizationTable),
 		*req.AcctID,
 		now,
 		string(core.StatusValid),
@@ -1480,6 +1511,3 @@ func (ssa *SQLStorageAuthority) AddPendingAuthorizations(ctx context.Context, re
 	}
 	return &sapb.AuthorizationIDs{Ids: ids}, nil
 }
-
-// TODO(@cpu) - Test `UpdateOrder`
-// TODO(@cpu) - Test `GetOrderAuthorizations`
