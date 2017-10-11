@@ -59,6 +59,5 @@ message NewOrderRequest {
 
 message FinalizeOrderRequest {
         optional core.Order order = 1;
-        optional int64 acctID = 2;
-        optional bytes csr = 3;
+        optional bytes csr = 2;
 }

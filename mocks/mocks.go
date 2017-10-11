@@ -126,6 +126,12 @@ func (sa *StorageAuthority) GetRegistration(_ context.Context, id int64) (core.R
 		return goodReg, nil
 	}
 
+	// ID 6 == an account without the agreement set
+	if id == 6 {
+		goodReg.Agreement = ""
+		return goodReg, nil
+	}
+
 	goodReg.InitialIP = net.ParseIP("5.6.7.8")
 	goodReg.CreatedAt = time.Date(2003, 9, 27, 0, 0, 0, 0, time.UTC)
 	return goodReg, nil
@@ -431,11 +437,12 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 	} else if *req.Id == 3 {
 		return nil, errors.New("very bad")
 	}
+
 	status := string(core.StatusPending)
 	one := int64(1)
 	zero := int64(0)
 	serial := "serial"
-	return &corepb.Order{
+	validOrder := &corepb.Order{
 		Id:                req.Id,
 		RegistrationID:    &one,
 		Expires:           &zero,
@@ -444,7 +451,16 @@ func (sa *StorageAuthority) GetOrder(_ context.Context, req *sapb.OrderRequest) 
 		Authorizations:    []string{"hello"},
 		CertificateSerial: &serial,
 		Error:             []byte("error"),
-	}, nil
+	}
+
+	// Order ID doesn't have a certificate serial yet
+	if *req.Id == 4 {
+		validOrder.CertificateSerial = nil
+		validOrder.Error = nil
+		return validOrder, nil
+	}
+
+	return validOrder, nil
 }
 
 func (sa *StorageAuthority) GetOrderAuthorizations(_ context.Context, req *sapb.OrderAuthorizationsRequest) (map[string]*core.Authorization, error) {

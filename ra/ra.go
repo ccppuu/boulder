@@ -763,7 +763,7 @@ func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rap
 
 	// If there is already a certificate serial for this order then it has been
 	// finalized and there is nothing left to do
-	if *order.CertificateSerial != "" {
+	if order.CertificateSerial != nil && *order.CertificateSerial != "" {
 		return berrors.MalformedError("Order is already finalized")
 	}
 
@@ -792,8 +792,8 @@ func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rap
 	// Check that the order names and the CSR names are an exact match, and that
 	// we are willing to issue for each.
 	for i, name := range orderNames {
-		if csrNames[i] != orderNames[i] {
-			return berrors.UnauthorizedError("CSR is missing Order domain %q", csrNames[i])
+		if orderNames[i] != csrNames[i] {
+			return berrors.UnauthorizedError("CSR is missing Order domain %q", orderNames[i])
 		}
 		// We have already checked `ra.PA.WillingToIssue` for the names in the order
 		// at the time of order creation, but we check again in case the policy has
@@ -810,7 +810,7 @@ func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rap
 		Bytes: req.Csr,
 		CSR:   csrOb,
 	}
-	cert, err := ra.issueCertificate(ctx, issueReq, *req.AcctID, *req.Order.Id)
+	cert, err := ra.issueCertificate(ctx, issueReq, *req.Order.RegistrationID, *req.Order.Id)
 	if err != nil {
 		return err
 	}
@@ -1541,37 +1541,37 @@ func (ra *RegistrationAuthorityImpl) NewOrder(ctx context.Context, req *rapb.New
 
 	now := ra.clk.Now().UnixNano()
 	existingAuthz, err := ra.SA.GetAuthorizations(ctx, &sapb.GetAuthorizationsRequest{
-		RegistrationID: req.RegistrationID,
+		RegistrationID: order.RegistrationID,
 		Now:            &now,
-		Domains:        req.Names,
+		Domains:        order.Names,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	gotAuthzFor := make(map[string]bool, len(req.Names))
+	gotAuthzFor := make(map[string]bool, len(order.Names))
 	for _, v := range existingAuthz.Authz {
 		gotAuthzFor[*v.Domain] = true
 		order.Authorizations = append(order.Authorizations, *v.Authz.Id)
 	}
 
-	if len(gotAuthzFor) < len(req.Names) {
-		if err := ra.checkPendingAuthorizationLimit(ctx, *req.RegistrationID); err != nil {
+	if len(gotAuthzFor) < len(order.Names) {
+		if err := ra.checkPendingAuthorizationLimit(ctx, *order.RegistrationID); err != nil {
 			return nil, err
 		}
 	}
 
 	var newAuthzs []*corepb.Authorization
-	for _, name := range req.Names {
+	for _, name := range order.Names {
 		if gotAuthzFor[name] {
 			continue
 		}
 		identifier := core.AcmeIdentifier{Value: name, Type: core.IdentifierDNS}
 		// TODO(#3069): Batch this check
-		if err := ra.checkInvalidAuthorizationLimit(ctx, *req.RegistrationID, identifier.Value); err != nil {
+		if err := ra.checkInvalidAuthorizationLimit(ctx, *order.RegistrationID, identifier.Value); err != nil {
 			return nil, err
 		}
-		pb, err := ra.createPendingAuthz(ctx, *req.RegistrationID, identifier)
+		pb, err := ra.createPendingAuthz(ctx, *order.RegistrationID, identifier)
 		if err != nil {
 			return nil, err
 		}

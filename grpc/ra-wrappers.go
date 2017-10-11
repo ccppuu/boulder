@@ -360,7 +360,7 @@ func (ras *RegistrationAuthorityServerWrapper) NewOrder(ctx context.Context, req
 }
 
 func (ras *RegistrationAuthorityServerWrapper) FinalizeOrder(ctx context.Context, request *rapb.FinalizeOrderRequest) (*corepb.Empty, error) {
-	if request == nil || request.Order == nil || request.AcctID == nil || request.Csr == nil {
+	if request == nil || request.Order == nil || request.Csr == nil {
 		return nil, errIncompleteRequest
 	}
 

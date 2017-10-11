@@ -1389,7 +1389,7 @@ func (wfe *WebFrontEndImpl) NewOrder(
 	logEvent *web.RequestEvent,
 	response http.ResponseWriter,
 	request *http.Request) {
-	_, _, acct, prob := wfe.validPOSTForAccount(request, ctx, logEvent)
+	body, _, acct, prob := wfe.validPOSTForAccount(request, ctx, logEvent)
 	addRequesterHeader(response, logEvent.Requester)
 	if prob != nil {
 		// validPOSTForAccount handles its own setting of logEvent.Errors
@@ -1397,8 +1397,27 @@ func (wfe *WebFrontEndImpl) NewOrder(
 		return
 	}
 
+	// We only allow specifying Names in a new order request - we ignore the
+	// `notBefore` and `notAfter` fields described in Section 7.4 of acme-07
+	var newOrderRequest struct {
+		Names []string
+	}
+	err := json.Unmarshal(body, &newOrderRequest)
+	if err != nil {
+		wfe.sendError(response, logEvent,
+			probs.Malformed("Unable to unmarshal NewOrder request body"), err)
+		return
+	}
+
+	if len(newOrderRequest.Names) == 0 {
+		wfe.sendError(response, logEvent,
+			probs.Malformed("NewOrder request did not specify any names"), nil)
+		return
+	}
+
 	order, err := wfe.RA.NewOrder(ctx, &rapb.NewOrderRequest{
 		RegistrationID: &acct.ID,
+		Names:          newOrderRequest.Names,
 	})
 	if err != nil {
 		wfe.sendError(response, logEvent, web.ProblemDetailsForError(err, "Error creating new order"), err)
@@ -1461,6 +1480,7 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 	if acctID != acct.ID {
 		wfe.sendError(response, logEvent,
 			probs.Malformed("Account ID from JWS does not match account ID in path"), nil)
+		return
 	}
 
 	// The account must have agreed to the subscriber agreement to finalize an
@@ -1494,7 +1514,7 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 
 	// If there is already a certificate serial for this order then it has been
 	// finalized and there is nothing left to do
-	if *order.CertificateSerial != "" {
+	if order.CertificateSerial != nil && *order.CertificateSerial != "" {
 		wfe.sendError(response, logEvent, probs.Malformed("Order is already finalized"), nil)
 		return
 	}
@@ -1553,17 +1573,28 @@ func (wfe *WebFrontEndImpl) FinalizeOrder(
 	// TODO(@cpu): Bring wfe.csrSignatureAlgs over to wfe2
 
 	err = wfe.RA.FinalizeOrder(ctx, &rapb.FinalizeOrderRequest{
-		AcctID: &acct.ID,
-		Csr:    rawCSR.CSR,
-		Order:  order,
+		Csr:   rawCSR.CSR,
+		Order: order,
 	})
 	if err != nil {
 		wfe.sendError(response, logEvent, web.ProblemDetailsForError(err, "Error finalizing order"), err)
 		return
 	}
+	finalizeURL := wfe.relativeEndpoint(request,
+		fmt.Sprintf("%s%d/%d", finalizeOrderPath, acctID, *order.Id))
+	respObj := orderJSON{
+		Status:         core.AcmeStatus(*order.Status),
+		Expires:        time.Unix(0, *order.Expires).UTC(),
+		Names:          order.Names,
+		FinalizeURL:    finalizeURL,
+		Authorizations: make([]string, len(order.Authorizations)),
+		Error:          string(order.Error),
+	}
+	for i, authzID := range order.Authorizations {
+		respObj.Authorizations[i] = wfe.relativeEndpoint(request, fmt.Sprintf("%s%s", authzPath, authzID))
+	}
 
-	// TODO(@cpu): Should this write the order object in response, or nothing, or this empty JSON body?
-	err = wfe.writeJsonResponse(response, logEvent, http.StatusOK, `{}`)
+	err = wfe.writeJsonResponse(response, logEvent, http.StatusOK, respObj)
 	if err != nil {
 		wfe.sendError(response, logEvent, probs.ServerInternal("Unable to write finalize order response"), nil)
 		return

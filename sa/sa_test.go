@@ -1372,12 +1372,17 @@ func TestOrder(t *testing.T) {
 		CertificateSerial: &empty,
 	})
 	test.AssertNotError(t, err, "sa.NewOrder failed")
-
 	test.AssertEquals(t, *order.Id, int64(1))
 
 	storedOrder, err := sa.GetOrder(context.Background(), &sapb.OrderRequest{Id: order.Id})
 	test.AssertNotError(t, err, "sa.Order failed")
-	test.AssertDeepEquals(t, storedOrder, order)
+	test.AssertEquals(t, *storedOrder.RegistrationID, *order.RegistrationID)
+	test.AssertEquals(t, *storedOrder.Expires, *order.Expires)
+	test.AssertDeepEquals(t, storedOrder.Authorizations, order.Authorizations)
+	test.AssertEquals(t, *storedOrder.Status, *order.Status)
+	test.AssertEquals(t, *storedOrder.CertificateSerial, *order.CertificateSerial)
+	// We expect the SA has reversed the identifier names
+	test.AssertDeepEquals(t, storedOrder.Names, []string{"com.example"})
 }
 
 func TestGetOrderAuthorizations(t *testing.T) {
