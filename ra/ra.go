@@ -754,17 +754,16 @@ func (ra *RegistrationAuthorityImpl) recheckCAA(ctx context.Context, names []str
 func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rapb.FinalizeOrderRequest) error {
 	order := req.Order
 
+	// Only pending orders can be finalized
+	if *order.Status != string(core.StatusPending) {
+		return berrors.InternalServerError("Order's status (%q) was not pending", *order.Status)
+	}
+
 	// There should never be an order with 0 names at the stage the RA is
 	// processing the order but we check to be on the safe side, throwing an
 	// internal server error if this assumption is ever violated.
 	if len(order.Names) == 0 {
 		return berrors.InternalServerError("Order has no associated names")
-	}
-
-	// If there is already a certificate serial for this order then it has been
-	// finalized and there is nothing left to do
-	if order.CertificateSerial != nil && *order.CertificateSerial != "" {
-		return berrors.MalformedError("Order is already finalized")
 	}
 
 	// Parse the CSR from the request
@@ -822,8 +821,10 @@ func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rap
 	}
 	serial := core.SerialToString(parsedCertificate.SerialNumber)
 
-	// Then update the Order so that it has a link to the issued certificate via
-	// the serial
+	// Update the Order so that it is finalized and has a link to the issued
+	// certificate via the serial
+	validStatus := string(core.StatusValid)
+	order.Status = &validStatus
 	order.CertificateSerial = &serial
 	updatedOrder, err := ra.SA.UpdateOrder(ctx, order)
 	if err != nil {

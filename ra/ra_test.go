@@ -1998,7 +1998,7 @@ func TestFinalizeOrder(t *testing.T) {
 	defer cleanUp()
 	ra.orderLifetime = time.Hour
 
-	egSerial := "eat.serial.for.breakfast"
+	validStatus := "valid"
 	fakeRegID := int64(0xB00)
 	fakeOrderID := int64(0xABBA)
 	invalidOrderID := int64(-1337)
@@ -2067,14 +2067,14 @@ func TestFinalizeOrder(t *testing.T) {
 	test.AssertNotError(t, err, "Could not finalize 2nd test pending authorization")
 
 	// Create a new order referencing both of the above finalized authzs
-	status := "valid"
+	pendingStatus := "pending"
 	expUnix := exp.Unix()
 	finalOrder, err := sa.NewOrder(context.Background(), &corepb.Order{
 		RegistrationID: &Registration.ID,
 		Expires:        &expUnix,
 		Names:          []string{"not-example.com", "www.not-example.com"},
 		Authorizations: []string{finalAuthz.ID, finalAuthzB.ID},
-		Status:         &status,
+		Status:         &pendingStatus,
 	})
 	test.AssertNotError(t, err, "Could not add test order with finalized authz IDs")
 
@@ -2093,26 +2093,28 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "No names in order",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
-					Names: []string{},
+					Status: &pendingStatus,
+					Names:  []string{},
 				},
 			},
 			ExpectedErrMsg: "Order has no associated names",
 		},
 		{
-			Name: "Already finalized order",
+			Name: "Wrong order state",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
-					Names:             []string{"example.com"},
-					CertificateSerial: &egSerial,
+					Status: &validStatus,
+					Names:  []string{"example.com"},
 				},
 			},
-			ExpectedErrMsg: "Order is already finalized",
+			ExpectedErrMsg: "Order's status (\"valid\") was not pending",
 		},
 		{
 			Name: "Invalid CSR",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
-					Names: []string{"example.com"},
+					Status: &pendingStatus,
+					Names:  []string{"example.com"},
 				},
 				Csr: []byte{0xC0, 0xFF, 0xEE},
 			},
@@ -2122,6 +2124,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "CSR that should be rejected",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"example.com"},
 					RegistrationID: &fakeRegID,
 				},
@@ -2133,6 +2136,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "CSR and Order with diff number of names",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"example.com", "example.org"},
 					RegistrationID: &fakeRegID,
 				},
@@ -2144,6 +2148,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "CSR missing an order name",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"foobar.com"},
 					RegistrationID: &fakeRegID,
 				},
@@ -2155,6 +2160,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "CSR with policy forbidden name",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"example.org"},
 					RegistrationID: &fakeRegID,
 				},
@@ -2166,6 +2172,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "Order with invalid ID",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"a.com", "a.org"},
 					Id:             &invalidOrderID,
 					RegistrationID: &fakeRegID,
@@ -2178,6 +2185,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "Order with missing registration",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"a.com", "a.org"},
 					Id:             &fakeOrderID,
 					RegistrationID: &fakeRegID,
@@ -2190,6 +2198,7 @@ func TestFinalizeOrder(t *testing.T) {
 			Name: "Order with missing authorizations",
 			OrderReq: &rapb.FinalizeOrderRequest{
 				Order: &corepb.Order{
+					Status:         &pendingStatus,
 					Names:          []string{"a.com", "a.org", "b.com"},
 					Id:             &fakeOrderID,
 					RegistrationID: &Registration.ID,

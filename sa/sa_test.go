@@ -1336,9 +1336,11 @@ func TestUpdateOrder(t *testing.T) {
 	order, err := sa.NewOrder(context.Background(), order)
 	test.AssertNotError(t, err, "NewOrder failed")
 
-	// Update the order with a non-empty certificate serial
+	// Update the order with a non-empty certificate serial and a final status
 	serial := "eat.serial.for.breakfast"
 	order.CertificateSerial = &serial
+	validStatus := string(core.StatusValid)
+	order.Status = &validStatus
 	_, err = sa.UpdateOrder(context.Background(), order)
 	test.AssertNotError(t, err, "UpdateOrder failed")
 
@@ -1347,7 +1349,8 @@ func TestUpdateOrder(t *testing.T) {
 		context.Background(),
 		&sapb.OrderRequest{Id: order.Id})
 	test.AssertNotError(t, err, "GetOrder failed")
-	test.AssertEquals(t, *updatedOrder.CertificateSerial, *order.CertificateSerial)
+	test.AssertEquals(t, *updatedOrder.CertificateSerial, serial)
+	test.AssertEquals(t, *updatedOrder.Status, validStatus)
 }
 
 func TestOrder(t *testing.T) {
