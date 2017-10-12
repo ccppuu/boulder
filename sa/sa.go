@@ -1346,7 +1346,14 @@ func (ssa *SQLStorageAuthority) GetOrder(ctx context.Context, req *sapb.OrderReq
 	if err != nil {
 		return nil, err
 	}
-	order.Names = names
+	// The requested names are stored reversed to improve indexing performance. We
+	// need to reverse the reversed names here before giving them back to the
+	// caller.
+	reversedNames := make([]string, len(names))
+	for i, n := range names {
+		reversedNames[i] = ReverseName(n)
+	}
+	order.Names = reversedNames
 
 	return order, nil
 }
