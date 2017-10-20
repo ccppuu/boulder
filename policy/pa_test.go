@@ -54,12 +54,6 @@ func TestWillingToIssue(t *testing.T) {
 		{`xn--.net`, errInvalidDNSCharacter},      // Label ends with '-'
 		{`0`, errTooFewLabels},
 		{`1`, errTooFewLabels},
-		{`*`, errInvalidDNSCharacter},
-		{`**`, errInvalidDNSCharacter},
-		{`*.*`, errInvalidDNSCharacter},
-		{`zombo*com`, errInvalidDNSCharacter},
-		{`*.com`, errInvalidDNSCharacter},
-		{`*.zombo.com`, errInvalidDNSCharacter},
 		{`..a`, errLabelTooShort},
 		{`a..a`, errLabelTooShort},
 		{`.a..a`, errLabelTooShort},
@@ -93,6 +87,16 @@ func TestWillingToIssue(t *testing.T) {
 		{`www.zombo.163`, errNonPublic},
 		{`xn--109-3veba6djs1bfxlfmx6c9g.xn--f1awi.xn--p1ai`, errMalformedIDN}, // Not in Unicode NFKC
 		{`bq--abwhky3f6fxq.jakacomo.com`, errInvalidRLDH},
+		// Invalid Wildcard test cases
+		{`*.*`, errTooManyWildcards},
+		{`*.*.wild.wildcards.org`, errTooManyWildcards},
+		{`**.wildcards.org`, errTooManyWildcards},
+		{`wild.*.wildcards.org`, errMisplacedWildcard},
+		{`wild.*`, errMisplacedWildcard},
+		{`*`, errTooFewLabels},
+		{`wild*.wildcards.org`, errMalformedWildcard},
+		{`*.org`, errICANNTLDWildcard},
+		{`*.co.uk`, errICANNTLDWildcard},
 	}
 
 	shouldBeTLDError := []string{
@@ -102,9 +106,11 @@ func TestWillingToIssue(t *testing.T) {
 
 	shouldBeBlacklisted := []string{
 		`highvalue.website1.org`,
+		`*.website2.org`,
 		`website2.co.uk`,
 		`www.website3.com`,
 		`lots.of.labels.website4.com`,
+		`*.lots.of.labels.and.a.wildcard.website4.com`,
 	}
 	blacklistContents := []string{
 		`website2.com`,
@@ -128,6 +134,8 @@ func TestWillingToIssue(t *testing.T) {
 		"8675309.com",
 		"web5ite2.com",
 		"www.web-site2.com",
+		"*.zombo.com",
+		"*.everything.is.possible.zombo.com",
 	}
 
 	pa := paImpl(t)

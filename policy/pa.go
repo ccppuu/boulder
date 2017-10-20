@@ -102,7 +102,7 @@ const (
 	maxDNSIdentifierLength = 253
 )
 
-var dnsLabelRegexp = regexp.MustCompile("^[a-z0-9][a-z0-9-]{0,62}$")
+var dnsLabelRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$|^\*$`)
 var punycodeRegexp = regexp.MustCompile("^xn--")
 var idnReservedRegexp = regexp.MustCompile("^[a-z0-9]{2}--")
 
@@ -110,7 +110,7 @@ func isDNSCharacter(ch byte) bool {
 	return ('a' <= ch && ch <= 'z') ||
 		('A' <= ch && ch <= 'Z') ||
 		('0' <= ch && ch <= '9') ||
-		ch == '.' || ch == '-'
+		ch == '.' || ch == '-' || ch == '*'
 }
 
 var (
@@ -122,6 +122,10 @@ var (
 	errNameTooLong         = berrors.MalformedError("DNS name too long")
 	errIPAddress           = berrors.MalformedError("Issuance for IP addresses not supported")
 	errTooManyLabels       = berrors.MalformedError("DNS name has too many labels")
+	errTooManyWildcards    = berrors.MalformedError("DNS name had more than one wildcard")
+	errMisplacedWildcard   = berrors.MalformedError("DNS name had wildcard in location other than left-most label")
+	errMalformedWildcard   = berrors.MalformedError("DNS name had a malformed wildcard label")
+	errICANNTLDWildcard    = berrors.MalformedError("DNS name was a wildcard for an ICANN TLD")
 	errEmptyName           = berrors.MalformedError("DNS name was empty")
 	errNameEndsInDot       = berrors.MalformedError("DNS name ends in a period")
 	errTooFewLabels        = berrors.MalformedError("DNS name does not have enough labels")
@@ -150,12 +154,15 @@ var (
 //  * MUST NOT be a label-wise suffix match for a name on the black list,
 //    where comparison is case-independent (normalized to lower case)
 //
+// TODO(@cpu): Update this comment for wildcard behaviour
+//
 // If WillingToIssue returns an error, it will be of type MalformedRequestError.
 func (pa *AuthorityImpl) WillingToIssue(id core.AcmeIdentifier) error {
 	if id.Type != core.IdentifierDNS {
 		return errInvalidIdentifier
 	}
 	domain := id.Value
+	wildcardDomain := false
 
 	if domain == "" {
 		return errEmptyName
@@ -179,12 +186,29 @@ func (pa *AuthorityImpl) WillingToIssue(id core.AcmeIdentifier) error {
 		return errNameEndsInDot
 	}
 
+	// Only one `*` character is allowed to be present in the domain
+	wildcardCount := strings.Count(domain, "*")
+	if wildcardCount > 1 {
+		return errTooManyWildcards
+	} else if wildcardCount == 1 {
+		wildcardDomain = true
+	}
+
 	labels := strings.Split(domain, ".")
 	if len(labels) > maxLabels {
 		return errTooManyLabels
 	}
 	if len(labels) < 2 {
 		return errTooFewLabels
+	}
+	// If there is a wildcard present in the domain it must be in the leftmost label
+	if wildcardDomain && strings.Count(labels[0], "*") != 1 {
+		return errMisplacedWildcard
+	}
+	// If there is a wildcard present in the leftmost label it must be only that
+	// single wildcard character in the label.
+	if wildcardDomain && labels[0] != "*" {
+		return errMalformedWildcard
 	}
 	for _, label := range labels {
 		if len(label) < 1 {
@@ -228,6 +252,12 @@ func (pa *AuthorityImpl) WillingToIssue(id core.AcmeIdentifier) error {
 		return errICANNTLD
 	}
 
+	// Names must have a non-wildcard label immediately adjacent to the ICANN TLD.
+	icannTLDLabels := strings.Split(domain, "."+icannTLD)
+	if icannTLDLabels[0] == "*" {
+		return errICANNTLDWildcard
+	}
+
 	// Require no match against blacklist
 	if err := pa.checkHostLists(domain); err != nil {
 		return err
@@ -262,23 +292,37 @@ func (pa *AuthorityImpl) checkHostLists(domain string) error {
 // acceptable for the given identifier.
 //
 // Note: Current implementation is static, but future versions may not be.
-func (pa *AuthorityImpl) ChallengesFor(identifier core.AcmeIdentifier) ([]core.Challenge, [][]int) {
+// TODO(@cpu): Update this comment
+func (pa *AuthorityImpl) ChallengesFor(identifier core.AcmeIdentifier) ([]core.Challenge, [][]int, error) {
 	challenges := []core.Challenge{}
 
-	if pa.enabledChallenges[core.ChallengeTypeHTTP01] {
-		challenges = append(challenges, core.HTTPChallenge01())
-	}
+	// If the identifier is a wildcard we have a different policy for which
+	// challenges are required
+	if strings.Count(identifier.Value, "*") > 0 {
+		// Our wildcard policy *requires* DNS-01 challenges. If they are not
+		// enabled, return an error
+		if !pa.enabledChallenges[core.ChallengeTypeDNS01] {
+			return nil, nil,
+				errors.New("Identifier included a wildcard but DNS-01 challenges are not enabled")
+		}
+		// Wildcard identifiers can only be authorized by DNS-01 challenge
+		challenges = []core.Challenge{core.DNSChallenge01()}
+	} else {
+		if pa.enabledChallenges[core.ChallengeTypeHTTP01] {
+			challenges = append(challenges, core.HTTPChallenge01())
+		}
 
-	if pa.enabledChallenges[core.ChallengeTypeTLSSNI01] {
-		challenges = append(challenges, core.TLSSNIChallenge01())
-	}
+		if pa.enabledChallenges[core.ChallengeTypeTLSSNI01] {
+			challenges = append(challenges, core.TLSSNIChallenge01())
+		}
 
-	if features.Enabled(features.AllowTLS02Challenges) && pa.enabledChallenges[core.ChallengeTypeTLSSNI02] {
-		challenges = append(challenges, core.TLSSNIChallenge02())
-	}
+		if features.Enabled(features.AllowTLS02Challenges) && pa.enabledChallenges[core.ChallengeTypeTLSSNI02] {
+			challenges = append(challenges, core.TLSSNIChallenge02())
+		}
 
-	if pa.enabledChallenges[core.ChallengeTypeDNS01] {
-		challenges = append(challenges, core.DNSChallenge01())
+		if pa.enabledChallenges[core.ChallengeTypeDNS01] {
+			challenges = append(challenges, core.DNSChallenge01())
+		}
 	}
 
 	// We shuffle the challenges and combinations to prevent ACME clients from
@@ -298,7 +342,7 @@ func (pa *AuthorityImpl) ChallengesFor(identifier core.AcmeIdentifier) ([]core.C
 		shuffledCombos[i] = combinations[comboIdx]
 	}
 
-	return shuffled, shuffledCombos
+	return shuffled, shuffledCombos, nil
 }
 
 // ExtractDomainIANASuffix returns the public suffix of the domain using only the "ICANN"
