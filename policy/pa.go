@@ -154,9 +154,8 @@ var (
 //  * MUST NOT be a label-wise suffix match for a name on the black list,
 //    where comparison is case-independent (normalized to lower case)
 //
-// TODO(@cpu): Update this comment for wildcard behaviour
-//
-// If WillingToIssue returns an error, it will be of type MalformedRequestError.
+// If WillingToIssue returns an error, it will be of type MalformedRequestError
+// or RejectedIdentifierError
 func (pa *AuthorityImpl) WillingToIssue(id core.AcmeIdentifier) error {
 	if id.Type != core.IdentifierDNS {
 		return errInvalidIdentifier
@@ -266,6 +265,58 @@ func (pa *AuthorityImpl) WillingToIssue(id core.AcmeIdentifier) error {
 	return nil
 }
 
+// WillingToIssueWildcard is an extension of WillingToIssue that accepts DNS
+// identifiers for well formed wildcard domains. It enforces that:
+// * The identifer is a DNS type identifier
+// * There is at most one `*` wildcard character
+// * That the wildcard character is the leftmost label
+// * That the wildcard label is not immediate adjacent to a top level ICANN TLD
+//
+// If all of the above is true then the base domain (e.g. without the *.) is run
+// through WillingToIssue to catch other illegal things (blocked hosts, etc).
+func (pa *AuthorityImpl) WillingToIssueWildcard(ident core.AcmeIdentifier) error {
+	// We're only willing to process DNS identifiers
+	if ident.Type != core.IdentifierDNS {
+		return errInvalidIdentifier
+	}
+	rawDomain := ident.Value
+
+	// If there is more than one wildcard in the domain the ident is invalid
+	if strings.Count(rawDomain, "*") > 1 {
+		return errTooManyWildcards
+	}
+
+	// If there is exactly one wildcard in the domain we need to do some special
+	// processing to ensure that it is a well formed wildcard request and to
+	// translate the identifer to its base domain for use with WillingToIssue
+	if strings.Count(rawDomain, "*") == 1 {
+		// If the rawDomain has a wildcard character, but it isn't the first most
+		// label of the domain name then the wildcard domain is malformed
+		if !strings.HasPrefix(rawDomain, "*.") {
+			return errMalformedWildcard
+		}
+		// The base domain is the wildcard request with the `*.` prefix removed
+		baseDomain := strings.TrimPrefix(rawDomain, "*.")
+		// Names must end in an ICANN TLD, but they must not be equal to an ICANN TLD.
+		icannTLD, err := extractDomainIANASuffix(baseDomain)
+		if err != nil {
+			return errNonPublic
+		}
+		// Names must have a non-wildcard label immediately adjacent to the ICANN
+		// TLD. No `*.com`!
+		if baseDomain == icannTLD {
+			return errICANNTLDWildcard
+		}
+		// Check that the PA is willing to issue for the base domain
+		return pa.WillingToIssue(core.AcmeIdentifier{
+			Type:  core.IdentifierDNS,
+			Value: baseDomain,
+		})
+	}
+
+	return pa.WillingToIssue(ident)
+}
+
 func (pa *AuthorityImpl) checkHostLists(domain string) error {
 	pa.blacklistMu.RLock()
 	defer pa.blacklistMu.RUnlock()
@@ -290,24 +341,23 @@ func (pa *AuthorityImpl) checkHostLists(domain string) error {
 
 // ChallengesFor makes a decision of what challenges, and combinations, are
 // acceptable for the given identifier.
-//
-// Note: Current implementation is static, but future versions may not be.
-// TODO(@cpu): Update this comment
 func (pa *AuthorityImpl) ChallengesFor(identifier core.AcmeIdentifier) ([]core.Challenge, [][]int, error) {
 	challenges := []core.Challenge{}
 
-	// If the identifier is a wildcard we have a different policy for which
-	// challenges are required
-	if strings.Count(identifier.Value, "*") > 0 {
-		// Our wildcard policy *requires* DNS-01 challenges. If they are not
-		// enabled, return an error
+	// If the identifier is for a DNS wildcard name we only
+	// provide a DNS-01 challenge as a matter of CA policy.
+	if strings.HasPrefix(identifier.Value, "*.") {
+		// We must have the DNS-01 challenge type enabled to create challenges for
+		// a wildcard identifier per LE policy.
 		if !pa.enabledChallenges[core.ChallengeTypeDNS01] {
-			return nil, nil,
-				errors.New("Identifier included a wildcard but DNS-01 challenges are not enabled")
+			return nil, nil, fmt.Errorf(
+				"Challenges requested for wildcard identifier but DNS-01 " +
+					"challenge type is not enabled")
 		}
-		// Wildcard identifiers can only be authorized by DNS-01 challenge
+		// Only provide a DNS-01 challenge
 		challenges = []core.Challenge{core.DNSChallenge01()}
 	} else {
+		// Otherwise we collect up challenges based on what is enabled.
 		if pa.enabledChallenges[core.ChallengeTypeHTTP01] {
 			challenges = append(challenges, core.HTTPChallenge01())
 		}

@@ -22,7 +22,6 @@ import (
 	caPB "github.com/letsencrypt/boulder/ca/proto"
 	"github.com/letsencrypt/boulder/core"
 	corepb "github.com/letsencrypt/boulder/core/proto"
-	"github.com/letsencrypt/boulder/csr"
 	csrlib "github.com/letsencrypt/boulder/csr"
 	berrors "github.com/letsencrypt/boulder/errors"
 	"github.com/letsencrypt/boulder/features"
@@ -248,6 +247,7 @@ func validateEmail(ctx context.Context, address string, resolver bdns.DNSClient)
 type certificateRequestEvent struct {
 	ID             string    `json:",omitempty"`
 	Requester      int64     `json:",omitempty"`
+	OrderID        int64     `json:",omitempty"`
 	SerialNumber   string    `json:",omitempty"`
 	VerifiedFields []string  `json:",omitempty"`
 	CommonName     string    `json:",omitempty"`
@@ -622,14 +622,58 @@ func (ra *RegistrationAuthorityImpl) MatchesCSR(parsedCertificate *x509.Certific
 	return nil
 }
 
+// checkOrderAuthorizations verifies that a provided set of names associated
+// with a specific order and account has all of the required valid, unexpired
+// authorizations to proceed with issuance. It is the ACME v2 equivalent of
+// `checkAuthorizations`.
+func (ra *RegistrationAuthorityImpl) checkOrderAuthorizations(
+	ctx context.Context,
+	names []string,
+	acctID accountID,
+	orderID orderID) error {
+	acctIDInt := int64(acctID)
+	orderIDInt := int64(orderID)
+	// Get all of the authorizations for this account/order
+	authzs, err := ra.SA.GetOrderAuthorizations(
+		ctx,
+		&sapb.GetOrderAuthorizationsRequest{
+			Id:     &orderIDInt,
+			AcctID: &acctIDInt,
+		})
+	if err != nil {
+		return err
+	}
+
+	// Check the authorizations to ensure validity for the names required.
+	return ra.checkAuthorizationsCAA(ctx, names, authzs, acctIDInt, ra.clk.Now())
+}
+
 // checkAuthorizations checks that each requested name has a valid authorization
 // that won't expire before the certificate expires. Returns an error otherwise.
 func (ra *RegistrationAuthorityImpl) checkAuthorizations(ctx context.Context, names []string, regID int64) error {
 	now := ra.clk.Now()
-	var badNames, recheckNames []string
 	for i := range names {
 		names[i] = strings.ToLower(names[i])
 	}
+	auths, err := ra.SA.GetValidAuthorizations(ctx, regID, names, now)
+	if err != nil {
+		return err
+	}
+
+	return ra.checkAuthorizationsCAA(ctx, names, auths, regID, now)
+}
+
+// checkAuthorizationsCAA implements the common logic of validating a set of
+// authorizations against a set of names that is used by both
+// `checkAuthorizations` and `checkOrderAuthorizations`. If required CAA will be
+// rechecked for authorizations that are too old.
+func (ra *RegistrationAuthorityImpl) checkAuthorizationsCAA(
+	ctx context.Context,
+	names []string,
+	authzs map[string]*core.Authorization,
+	regID int64,
+	now time.Time) error {
+	var badNames, recheckNames []string
 	// Per Baseline Requirements, CAA must be checked within 8 hours of issuance.
 	// CAA is checked when an authorization is validated, so as long as that was
 	// less than 8 hours ago, we're fine. If it was more than 8 hours ago
@@ -639,12 +683,8 @@ func (ra *RegistrationAuthorityImpl) checkAuthorizations(ctx context.Context, na
 	// lifetime in the future we will need to tweak this correspondingly so it
 	// works correctly during the switchover.
 	caaRecheckTime := now.Add(ra.authorizationLifetime).Add(-8 * time.Hour)
-	auths, err := ra.SA.GetValidAuthorizations(ctx, regID, names, now)
-	if err != nil {
-		return err
-	}
 	for _, name := range names {
-		authz := auths[name]
+		authz := authzs[name]
 		if authz == nil {
 			badNames = append(badNames, name)
 		} else if authz.Expires == nil {
@@ -656,14 +696,14 @@ func (ra *RegistrationAuthorityImpl) checkAuthorizations(ctx context.Context, na
 		}
 	}
 
-	if err = ra.recheckCAA(ctx, recheckNames); err != nil {
+	if err := ra.recheckCAA(ctx, recheckNames); err != nil {
 		return err
 	}
 
 	if len(badNames) > 0 {
 		return berrors.UnauthorizedError(
 			"authorizations for these names not found or expired: %s",
-			strings.Join(badNames, ", "),
+			strings.Join(core.UniqueLowerNames(badNames), ", "),
 		)
 	}
 
@@ -714,18 +754,121 @@ func (ra *RegistrationAuthorityImpl) recheckCAA(ctx context.Context, names []str
 	return nil
 }
 
+// FinalizeOrder accepts a request to finalize an order object and, if possible,
+// issues a certificate to satisfy the order. If an order does not have valid,
+// unexpired authorizations for all of its associated names an error is
+// returned. Similarly we vet that all of the names in the order are acceptable
+// based on current policy and return an error if the order can't be fulfilled.
+// If successful the order will be returned in processing status for the client
+// to poll while awaiting finalization to occur.
+func (ra *RegistrationAuthorityImpl) FinalizeOrder(ctx context.Context, req *rapb.FinalizeOrderRequest) (*corepb.Order, error) {
+	order := req.Order
+
+	// Only pending orders can be finalized
+	if *order.Status != string(core.StatusPending) {
+		return nil, berrors.InternalServerError("Order's status (%q) was not pending", *order.Status)
+	}
+
+	// There should never be an order with 0 names at the stage the RA is
+	// processing the order but we check to be on the safe side, throwing an
+	// internal server error if this assumption is ever violated.
+	if len(order.Names) == 0 {
+		return nil, berrors.InternalServerError("Order has no associated names")
+	}
+
+	// Parse the CSR from the request
+	csrOb, err := x509.ParseCertificateRequest(req.Csr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Dedupe, lowercase and sort both the names from the CSR and the names in the
+	// order.
+	csrNames := core.UniqueLowerNames(csrOb.DNSNames)
+	orderNames := core.UniqueLowerNames(order.Names)
+
+	// Immediately reject the request if the number of names differ
+	if len(orderNames) != len(csrNames) {
+		return nil, berrors.UnauthorizedError("Order includes different number of names than CSR specifies")
+	}
+
+	// Check that the order names and the CSR names are an exact match
+	for i, name := range orderNames {
+		if name != csrNames[i] {
+			return nil, berrors.UnauthorizedError("CSR is missing Order domain %q", name)
+		}
+	}
+
+	// Update the order to be status processing - we issue synchronously at the
+	// present time so this is somewhat artificial/unnecessary but allows planning
+	// for the future.
+	if err := ra.SA.SetOrderProcessing(ctx, order); err != nil {
+		return nil, err
+	}
+
+	// Attempt issuance for the order. If the order isn't fully authorized this
+	// will return an error.
+	issueReq := core.CertificateRequest{
+		Bytes: req.Csr,
+		CSR:   csrOb,
+	}
+	cert, err := ra.issueCertificate(ctx, issueReq, accountID(*order.RegistrationID), orderID(*order.Id))
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse the issued certificate to get the serial
+	parsedCertificate, err := x509.ParseCertificate([]byte(cert.DER))
+	if err != nil {
+		return nil, err
+	}
+	serial := core.SerialToString(parsedCertificate.SerialNumber)
+
+	// Finalize the order with its new CertificateSerial
+	order.CertificateSerial = &serial
+	if err := ra.SA.FinalizeOrder(ctx, order); err != nil {
+		return nil, err
+	}
+
+	// Update the order status locally since the SA doesn't return the updated
+	// order itself after setting the status
+	validStatus := string(core.StatusValid)
+	order.Status = &validStatus
+	return order, nil
+}
+
 // NewCertificate requests the issuance of a certificate.
 func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req core.CertificateRequest, regID int64) (core.Certificate, error) {
+	// NewCertificate provides an order ID of 0, indicating this is a classic ACME
+	// v1 issuance request from the new certificate endpoint that is not
+	// associated with an ACME v2 order.
+	return ra.issueCertificate(ctx, req, accountID(regID), orderID(0))
+}
+
+// To help minimize the chance that an accountID would be used as an order ID
+// (or vice versa) when calling `issueCertificate` we define internal
+// `accountID` and `orderID` types so that callers must explicitly cast.
+type accountID int64
+type orderID int64
+
+// issueCertificate handles the common aspects of certificate issuance used by
+// both the "classic" NewCertificate endpoint (for ACME v1) and the
+// FinalizeOrder endpoint (for ACME v2).
+func (ra *RegistrationAuthorityImpl) issueCertificate(
+	ctx context.Context,
+	req core.CertificateRequest,
+	acctID accountID,
+	oID orderID) (core.Certificate, error) {
 	emptyCert := core.Certificate{}
-	var logEventResult string
 
 	// Assume the worst
-	logEventResult = "error"
+	logEventResult := "error"
 
 	// Construct the log event
 	logEvent := certificateRequestEvent{
 		ID:          core.NewToken(),
-		Requester:   regID,
+		OrderID:     int64(oID),
+		Requester:   int64(acctID),
 		RequestTime: ra.clk.Now(),
 	}
 
@@ -734,11 +877,17 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 		ra.log.AuditObject(fmt.Sprintf("Certificate request - %s", logEventResult), logEvent)
 	}()
 
-	if regID <= 0 {
-		return emptyCert, berrors.MalformedError("invalid registration ID: %d", regID)
+	if acctID <= 0 {
+		return emptyCert, berrors.MalformedError("invalid account ID: %d", acctID)
 	}
 
-	registration, err := ra.SA.GetRegistration(ctx, regID)
+	// OrderID can be 0 if `issueCertificate` is called by `NewCertificate` for
+	// the classic issuance flow. It should never be less than 0.
+	if oID < 0 {
+		return emptyCert, berrors.MalformedError("invalid order ID: %d", oID)
+	}
+
+	account, err := ra.SA.GetRegistration(ctx, int64(acctID))
 	if err != nil {
 		logEvent.Error = err.Error()
 		return emptyCert, err
@@ -746,24 +895,24 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 
 	// Verify the CSR
 	csr := req.CSR
-	if err := csrlib.VerifyCSR(csr, ra.maxNames, &ra.keyPolicy, ra.PA, ra.forceCNFromSAN, regID); err != nil {
+	if err := csrlib.VerifyCSR(csr, ra.maxNames, &ra.keyPolicy, ra.PA, ra.forceCNFromSAN, int64(acctID)); err != nil {
 		return emptyCert, berrors.MalformedError(err.Error())
 	}
 
-	logEvent.CommonName = csr.Subject.CommonName
-	logEvent.Names = csr.DNSNames
-
-	// Validate that authorization key is authorized for all domains
-	names := make([]string, len(csr.DNSNames))
-	copy(names, csr.DNSNames)
-
-	if len(names) == 0 {
+	if len(csr.DNSNames) == 0 {
 		err = berrors.UnauthorizedError("CSR has no names in it")
 		logEvent.Error = err.Error()
 		return emptyCert, err
 	}
 
-	if core.KeyDigestEquals(csr.PublicKey, registration.Key) {
+	logEvent.CommonName = csr.Subject.CommonName
+	logEvent.Names = csr.DNSNames
+
+	// Validate that authorization key is authorized for all domains in the CSR
+	names := make([]string, len(csr.DNSNames))
+	copy(names, csr.DNSNames)
+
+	if core.KeyDigestEquals(csr.PublicKey, account.Key) {
 		err = berrors.MalformedError("certificate public key must be different than account key")
 		return emptyCert, err
 	}
@@ -771,13 +920,22 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 	// Check rate limits before checking authorizations. If someone is unable to
 	// issue a cert due to rate limiting, we don't want to tell them to go get the
 	// necessary authorizations, only to later fail the rate limit check.
-	err = ra.checkLimits(ctx, names, registration.ID)
+	err = ra.checkLimits(ctx, names, account.ID)
 	if err != nil {
 		logEvent.Error = err.Error()
 		return emptyCert, err
 	}
 
-	err = ra.checkAuthorizations(ctx, names, registration.ID)
+	// If the orderID is 0 then this is a classic issuance and we need to check
+	// that the account is authorized for the names in the CSR.
+	if oID == 0 {
+		err = ra.checkAuthorizations(ctx, names, account.ID)
+	} else {
+		// Otherwise, if the orderID is not 0 we need to follow the order based
+		// issuance process and check that this specific order is fully authorized
+		// and associated with the expected account ID
+		err = ra.checkOrderAuthorizations(ctx, names, acctID, oID)
+	}
 	if err != nil {
 		logEvent.Error = err.Error()
 		return emptyCert, err
@@ -787,9 +945,12 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 	logEvent.VerifiedFields = []string{"subject.commonName", "subjectAltName"}
 
 	// Create the certificate and log the result
+	acctIDInt := int64(acctID)
+	orderIDInt := int64(oID)
 	issueReq := &caPB.IssueCertificateRequest{
 		Csr:            csr.Raw,
-		RegistrationID: &regID,
+		RegistrationID: &acctIDInt,
+		OrderID:        &orderIDInt,
 	}
 	cert, err := ra.CA.IssueCertificate(ctx, issueReq)
 	if err != nil {
@@ -799,8 +960,7 @@ func (ra *RegistrationAuthorityImpl) NewCertificate(ctx context.Context, req cor
 
 	if ra.publisher != nil {
 		go func() {
-			// Since we don't want this method to be canceled if the parent context
-			// expires, pass a background context to it and run it in a goroutine.
+			// This context is limited by the gRPC timeout.
 			_ = ra.publisher.SubmitToCT(context.Background(), cert.DER)
 		}()
 	}
@@ -1193,7 +1353,13 @@ func (ra *RegistrationAuthorityImpl) UpdateAuthorization(ctx context.Context, ba
 
 	vaCtx := context.Background()
 	go func() {
-		records, err := ra.VA.PerformValidation(vaCtx, authz.Identifier.Value, authz.Challenges[challengeIndex], authz)
+		domain := authz.Identifier.Value
+		// If the identifier is a wildcard domain we need to validate the base
+		// domain by removing the "*." wildcard prefix.
+		if strings.HasPrefix(domain, "*.") {
+			domain = strings.TrimPrefix(domain, "*.")
+		}
+		records, err := ra.VA.PerformValidation(vaCtx, domain, authz.Challenges[challengeIndex], authz)
 		var prob *probs.ProblemDetails
 		if p, ok := err.(*probs.ProblemDetails); ok {
 			prob = p
@@ -1376,59 +1542,92 @@ func (ra *RegistrationAuthorityImpl) NewOrder(ctx context.Context, req *rapb.New
 	status := string(core.StatusPending)
 	order := &corepb.Order{
 		RegistrationID: req.RegistrationID,
+		Names:          core.UniqueLowerNames(req.Names),
 		Expires:        &expires,
-		Csr:            req.Csr,
 		Status:         &status,
 	}
-	parsedCSR, err := x509.ParseCertificateRequest(req.Csr)
-	if err != nil {
-		return nil, err
-	}
 
-	err = csr.VerifyCSR(parsedCSR, ra.maxNames, &ra.keyPolicy, ra.PA, ra.forceCNFromSAN, *req.RegistrationID)
-	if err != nil {
-		return nil, err
-	}
-	names := core.UniqueLowerNames(parsedCSR.DNSNames)
-	for _, name := range names {
-		if err := ra.PA.WillingToIssue(core.AcmeIdentifier{Value: name, Type: core.IdentifierDNS}); err != nil {
-			return nil, err
+	orderIdentifiers := make([]core.AcmeIdentifier, len(order.Names))
+	// Validate that our policy allows issuing for each of the names in the order
+	for i, name := range order.Names {
+		id := core.AcmeIdentifier{Value: name, Type: core.IdentifierDNS}
+		orderIdentifiers[i] = id
+
+		if features.Enabled(features.WildcardDomains) {
+			if err := ra.PA.WillingToIssueWildcard(id); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := ra.PA.WillingToIssue(id); err != nil {
+				return nil, err
+			}
 		}
 	}
 
+	// Check whether there are existing non-expired authorizations for the set of
+	// order names
 	now := ra.clk.Now().UnixNano()
 	existingAuthz, err := ra.SA.GetAuthorizations(ctx, &sapb.GetAuthorizationsRequest{
-		RegistrationID: req.RegistrationID,
+		RegistrationID: order.RegistrationID,
 		Now:            &now,
-		Domains:        names,
+		Domains:        order.Names,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	gotAuthzFor := make(map[string]bool, len(names))
+	// Collect up the authorizations we found into a map keyed by the domains the
+	// authorizations correspond to
+	nameToExistingAuthz := make(map[string]*corepb.Authorization, len(orderIdentifiers))
 	for _, v := range existingAuthz.Authz {
-		gotAuthzFor[*v.Domain] = true
-		order.Authorizations = append(order.Authorizations, *v.Authz.Id)
+		nameToExistingAuthz[*v.Domain] = v.Authz
 	}
 
-	if len(gotAuthzFor) < len(names) {
-		if err := ra.checkPendingAuthorizationLimit(ctx, *req.RegistrationID); err != nil {
+	// For each of the names in the order, if there is an acceptable
+	// existing authz, append its ID to the order to reuse it. Otherwise track
+	// that there is a missing authz for a name
+	var missingAuthzs []core.AcmeIdentifier
+	for i, name := range order.Names {
+		ident := orderIdentifiers[i]
+		// If there is an existing authz, process it
+		if authz, exists := nameToExistingAuthz[name]; exists {
+			// If the identifier is a wildcard and the existing authz only has one
+			// DNS-01 type challenge we can reuse it. In theory we will
+			// never get back an authorization for "*.example.com" that doesn't meet
+			// this criteria from SA.GetAuthorizations but we verify again to be safe.
+			if strings.HasPrefix(ident.Value, "*.") &&
+				len(authz.Challenges) == 1 && *authz.Challenges[0].Type == core.ChallengeTypeDNS01 {
+				order.Authorizations = append(order.Authorizations, *authz.Id)
+				continue
+			} else {
+				// If the identifier isn't a wildcard, we can reuse any authz that has
+				// the normal number of challenges (e.g. not just DNS-01-Wildcard)
+				order.Authorizations = append(order.Authorizations, *authz.Id)
+				continue
+			}
+		}
+		// We didn't have an appropriate authz to reuse, track the identifier as
+		// needing a new pending authz.
+		missingAuthzs = append(missingAuthzs, ident)
+	}
+
+	// If the order isn't fully authorized we need to check that the client has
+	// rate limit room for more pending authorizations
+	if len(missingAuthzs) > 0 {
+		if err := ra.checkPendingAuthorizationLimit(ctx, *order.RegistrationID); err != nil {
 			return nil, err
 		}
 	}
 
+	// Loop through each of the identifiers missing authzs and create a new pending
+	// authorization for each.
 	var newAuthzs []*corepb.Authorization
-	for _, name := range names {
-		if gotAuthzFor[name] {
-			continue
-		}
-		identifier := core.AcmeIdentifier{Value: name, Type: core.IdentifierDNS}
+	for _, identifier := range missingAuthzs {
 		// TODO(#3069): Batch this check
-		if err := ra.checkInvalidAuthorizationLimit(ctx, *req.RegistrationID, identifier.Value); err != nil {
+		if err := ra.checkInvalidAuthorizationLimit(ctx, *order.RegistrationID, identifier.Value); err != nil {
 			return nil, err
 		}
-		pb, err := ra.createPendingAuthz(ctx, *req.RegistrationID, identifier)
+		pb, err := ra.createPendingAuthz(ctx, *order.RegistrationID, identifier)
 		if err != nil {
 			return nil, err
 		}
@@ -1479,8 +1678,14 @@ func (ra *RegistrationAuthorityImpl) createPendingAuthz(ctx context.Context, reg
 		}
 	}
 
-	// Create challenges. The WFE will  update them with URIs before sending them out.
-	challenges, combinations := ra.PA.ChallengesFor(identifier)
+	// Create challenges. The WFE will update them with URIs before sending them out.
+	challenges, combinations, err := ra.PA.ChallengesFor(identifier)
+	if err != nil {
+		// The only time ChallengesFor errors it is a fatal configuration error
+		// where challenges required by policy for an identifier are not enabled. We
+		// want to treat this as an internal server error.
+		return nil, berrors.InternalServerError(err.Error())
+	}
 	// Check each challenge for sanity.
 	for _, challenge := range challenges {
 		if err := challenge.CheckConsistencyForClientOffer(); err != nil {

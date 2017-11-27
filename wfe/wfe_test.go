@@ -262,13 +262,21 @@ func (ra *MockRegistrationAuthority) NewOrder(ctx context.Context, _ *rapb.NewOr
 	return nil, nil
 }
 
+func (ra *MockRegistrationAuthority) FinalizeOrder(ctx context.Context, _ *rapb.FinalizeOrderRequest) (*corepb.Order, error) {
+	return nil, nil
+}
+
 type mockPA struct{}
 
-func (pa *mockPA) ChallengesFor(identifier core.AcmeIdentifier) (challenges []core.Challenge, combinations [][]int) {
+func (pa *mockPA) ChallengesFor(identifier core.AcmeIdentifier) (challenges []core.Challenge, combinations [][]int, err error) {
 	return
 }
 
 func (pa *mockPA) WillingToIssue(id core.AcmeIdentifier) error {
+	return nil
+}
+
+func (pa *mockPA) WillingToIssueWildcard(id core.AcmeIdentifier) error {
 	return nil
 }
 
