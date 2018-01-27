@@ -1444,6 +1444,8 @@ func (ssa *SQLStorageAuthority) NewOrder(ctx context.Context, req *corepb.Order)
 	// based on authzs here, we know a brand new order is always pending)
 	pendingStatus := string(core.StatusPending)
 	req.Status = &pendingStatus
+	processingStatus := false
+	req.BeganProcessing = &processingStatus
 	return req, nil
 }
 

@@ -419,7 +419,7 @@ func orderValid(order *corepb.Order) bool {
 // Callers must additionally ensure the `CertificateSerial` field is non-nil if
 // they intend to use it.
 func newOrderValid(order *corepb.Order) bool {
-	return !(order.RegistrationID == nil || order.Expires == nil || order.Authorizations == nil || order.Status == nil || order.Names == nil)
+	return !(order.RegistrationID == nil || order.Expires == nil || order.Authorizations == nil || order.Names == nil || order.BeganProcessing == nil)
 }
 
 func authorizationValid(authz *corepb.Authorization) bool {
