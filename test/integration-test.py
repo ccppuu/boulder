@@ -532,7 +532,18 @@ def run_chisel():
     test_stats()
 
 def run_loadtest():
+    # Run the load generator
     run("./bin/load-generator -config test/load-generator/config/integration-test-config.json")
+
+    # Read the latency data it produced
+    with open("/tmp/example-latency.json") as f:
+        dataLines = f.readlines()
+
+    # Check that none of the datapoints were a failure
+    for line in dataLines:
+        datapoint = json.loads(line)
+        if datapoint.type != 'good':
+            raise Exception("Load generator had a failed request: %s", line)
 
 if __name__ == "__main__":
     try:

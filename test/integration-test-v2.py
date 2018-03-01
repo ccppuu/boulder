@@ -271,10 +271,21 @@ def test_revoke_by_privkey():
     client.revoke(jose.ComparableX509(cert), 0)
 
 def test_loadgeneration():
+    # Run the load generator
     subprocess.check_output(
         "./bin/load-generator -config test/load-generator/config/v2-integration-test-config.json",
         shell=True,
         stderr=subprocess.STDOUT)
+
+    # Read the latency data it produced
+    with open("/tmp/v2-example-latency.json") as f:
+        dataLines = f.readlines()
+
+    # Check that none of the datapoints were a failure
+    for line in dataLines:
+        datapoint = json.loads(line)
+        if datapoint.type != 'good':
+            raise Exception("Load generator had a failed request: %s", line)
 
 if __name__ == "__main__":
     try:
