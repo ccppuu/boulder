@@ -121,7 +121,10 @@ function run_load_generator() {
     config="test/load-generator/example-config.json"
   fi
 
-  run load-generator -config $1
+  pushd test/load-generator/
+    run go build ./
+    run ./load-generator -config $1
+  popd
   end_context #"load-generator"
 }
 
