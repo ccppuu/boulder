@@ -10,9 +10,7 @@ fi
 # Order doesn't matter. Note: godep-restore is specifically left out of the
 # defaults, because we don't want to run it locally (would be too disruptive to
 # GOPATH). We also omit coverage by default on local runs because it generates
-# artifacts on disk that aren't needed. We omit load-generator and
-# load-generator-acme-v2 since they will produce a good deal of system load by
-# design.
+# artifacts on disk that aren't needed.
 RUN=${RUN:-vet fmt migrations unit integration acme-v2 errcheck dashlint}
 
 # The list of segments to hard fail on, as opposed to continuing to the end of
@@ -113,21 +111,6 @@ function run_test_coverage() {
   goveralls -v -coverprofile=gover.coverprofile -service=travis-ci
 }
 
-function run_load_generator() {
-  start_context "load-generator"
-  local config="$1"
-
-  if [ -z "$config" ]; then
-    config="test/load-generator/example-config.json"
-  fi
-
-  pushd test/load-generator/
-    run go build ./
-    run ./load-generator -config "$config"
-  popd
-  end_context #"load-generator"
-}
-
 #
 # Run Go Vet, a correctness-focused static analysis tool
 #
@@ -202,7 +185,7 @@ if [[ "$RUN" =~ "integration" ]] ; then
 
   source ${CERTBOT_PATH:-/certbot}/${VENV_NAME:-venv}/bin/activate
   DIRECTORY=http://boulder:4000/directory \
-    run python2 test/integration-test.py --chisel
+    run python2 test/integration-test.py --chisel --load
   end_context #integration
 fi
 
@@ -210,14 +193,6 @@ if [[ "$RUN" =~ "acme-v2" ]] ; then
   source ${CERTBOT_PATH:-/certbot}/${VENV_NAME:-venv}/bin/activate
   DIRECTORY=https://boulder:4431/directory \
     run python2 test/integration-test-v2.py
-fi
-
-if [[ "$RUN" =~ "load-generator" ]]; then
-  run_load_generator
-fi
-
-if [[ "$RUN" =~ "load-generator-acme-v2" ]]; then
-  run_load_generator "v2-example-config.json"
 fi
 
 # Run godep-restore (happens only in Travis) to check that the hashes in
