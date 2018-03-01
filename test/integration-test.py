@@ -484,12 +484,12 @@ def main():
 
     now = datetime.datetime.utcnow()
     seventy_days_ago = now+datetime.timedelta(days=-70)
-    if not startservers.start(race_detection=False, fakeclock=fakeclock(seventy_days_ago)):
+    if not startservers.start(race_detection=True, fakeclock=fakeclock(seventy_days_ago)):
         raise Exception("startservers failed (mocking seventy days ago)")
     setup_seventy_days_ago()
     startservers.stop()
 
-    if not startservers.start(race_detection=False):
+    if not startservers.start(race_detection=True):
         raise Exception("startservers failed")
 
     if args.run_all or args.run_chisel:
