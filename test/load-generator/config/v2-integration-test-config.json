@@ -7,7 +7,7 @@
             "finalizeOrder"
         ],
         "rate": 5,
-        "runtime": "30s",
+        "runtime": "15s",
         "rateDelta": "5/1m"
     },
     "apiBase": "http://boulder:4001",
