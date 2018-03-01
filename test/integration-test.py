@@ -532,7 +532,7 @@ def run_chisel():
     test_stats()
 
 def run_loadtest():
-    run("./bin/load-generator -config test/load-generator/integration-test-config.json")
+    run("./bin/load-generator -config test/load-generator/config/integration-test-config.json")
 
 if __name__ == "__main__":
     try:

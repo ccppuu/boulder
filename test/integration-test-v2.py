@@ -51,6 +51,8 @@ def main():
     test_revoke_by_privkey()
     test_order_finalize_early()
 
+    test_loadgeneration()
+
     if not startservers.check():
         raise Exception("startservers.check failed")
 
@@ -267,6 +269,12 @@ def test_revoke_by_privkey():
 
     cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, order.fullchain_pem)
     client.revoke(jose.ComparableX509(cert), 0)
+
+def test_loadgeneration():
+    subprocess.check_output(
+        "./bin/load-generator -config test/load-generator/config/v2-integration-test-config.json",
+        shell=True,
+        stderr=subprocess.STDOUT)
 
 if __name__ == "__main__":
     try:
