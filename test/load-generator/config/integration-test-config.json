@@ -16,6 +16,5 @@
     "tlsOneAddr": "localhost:5001",
     "regKeySize": 2048,
     "certKeySize": 2048,
-    "regEmail": "loadtesting@letsencrypt.org",
-    "results": "/tmp/integration-latency.json"
+    "regEmail": "loadtesting@letsencrypt.org"
 }

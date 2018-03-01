@@ -10,12 +10,13 @@
         "runtime": "15s",
         "rateDelta": "5/1m"
     },
-    "apiBase": "http://boulder:4001",
+    "apiBase": "http://localhost:4001",
     "domainBase": "com",
-    "httpOneAddr": "localhost:5002",
+    "httpOneAddr": "172.17.0.1:5002",
     "regKeySize": 2048,
     "certKeySize": 2048,
     "regEmail": "loadtesting@letsencrypt.org",
     "maxRegs": 20,
-    "dontSaveState": true
+    "dontSaveState": true,
+    "results": "./v2-example-latency.json"
 }

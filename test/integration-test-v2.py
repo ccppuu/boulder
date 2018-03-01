@@ -272,17 +272,20 @@ def test_revoke_by_privkey():
 
 def test_loadgeneration():
     # Run the load generator
+    latency_data_file = "/tmp/v2-integration-test-latency.json"
     subprocess.check_output(
-        "./bin/load-generator -config test/load-generator/config/v2-integration-test-config.json",
+        "./bin/load-generator \
+            -config test/load-generator/config/v2-integration-test-config.json\
+            -results %s" % latency_data_file,
         shell=True,
         stderr=subprocess.STDOUT)
 
     # Read the latency data it produced
-    with open("/tmp/v2-example-latency.json") as f:
-        dataLines = f.readlines()
+    with open(latency_data_file) as f:
+        data_lines = f.readlines()
 
     # Check that none of the datapoints were a failure
-    for line in dataLines:
+    for line in data_lines:
         datapoint = json.loads(line)
         if datapoint.type != 'good':
             raise Exception("Load generator had a failed request: %s", line)
