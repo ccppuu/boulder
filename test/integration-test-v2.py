@@ -287,7 +287,7 @@ def test_loadgeneration():
     # Check that none of the datapoints were a failure
     for line in data_lines:
         datapoint = json.loads(line)
-        if datapoint.type != 'good':
+        if datapoint['type'] != 'good':
             raise Exception("Load generator had a failed request: %s", line)
 
 if __name__ == "__main__":
