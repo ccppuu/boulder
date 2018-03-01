@@ -471,7 +471,7 @@ def main():
                         help="run the certbot integration tests")
     parser.add_argument('--chisel', dest="run_chisel", action="store_true",
                         help="run integration tests using chisel")
-    parser.add_argument('--load' dest="run_loadtest", action="store_true",
+    parser.add_argument('--load', dest="run_loadtest", action="store_true",
                         help="run load-generator")
     # allow any ACME client to run custom command for integration
     # testing (without having to implement its own busy-wait loop)
