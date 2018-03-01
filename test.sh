@@ -123,7 +123,7 @@ function run_load_generator() {
 
   pushd test/load-generator/
     run go build ./
-    run ./load-generator -config $1
+    run ./load-generator -config "$config"
   popd
   end_context #"load-generator"
 }
