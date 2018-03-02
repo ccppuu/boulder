@@ -265,7 +265,7 @@ def test_revoke_by_account():
     cert_file_pem = os.path.join(tempdir, "revokeme.pem")
     client = chisel.make_client()
     cert, _ = auth_and_issue([random_domain()], client=client)
-    client.revoke(cert.body)
+    client.revoke(cert.body, 0)
 
     ee_ocsp_url = "http://localhost:4002"
     wait_for_ocsp_revoked(cert_file_pem, "test/test-ca2.pem", ee_ocsp_url)
