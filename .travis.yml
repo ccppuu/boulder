@@ -32,6 +32,9 @@ branches:
 
 matrix:
   include:
+    #
+    # Current Go version build tasks:
+    #
     - env: RUN="vet fmt migrations integration godep-restore errcheck generate dashlint rpm"
     # Config changes that have landed in master but not yet been applied to
     # production can be made in boulder-config-next.json.
@@ -39,6 +42,16 @@ matrix:
     - env: RUN="unit"
     - env: RUN="unit-next" BOULDER_CONFIG_DIR="test/config-next"
     - env: RUN="coverage"
+
+    #
+    # Next Go version build tasks:
+    #
+    - env: GO_VERSION="1.10.1" RUN="vet fmt migrations integration godep-restore errcheck generate dashlint rpm"
+    # Config changes that have landed in master but not yet been applied to
+    # production can be made in boulder-config-next.json.
+    - env: GO_VERSION="1.10.1" RUN="integration" BOULDER_CONFIG_DIR="test/config-next"
+    - env: GO_VERSION="1.10.1" RUN="unit"
+    - env: GO_VERSION="1.10.1" RUN="unit-next" BOULDER_CONFIG_DIR="test/config-next"
   fast_finish: true
   allow_failures:
     - env: RUN="coverage"
@@ -48,4 +61,4 @@ install:
   - docker-compose pull
 
 script:
-  - docker-compose run -e BOULDER_CONFIG_DIR="${BOULDER_CONFIG_DIR}" -e RUN="${RUN}" -e TRAVIS="${TRAVIS}" -e TRAVIS_COMMIT="${TRAVIS_COMMIT}" -e TRAVIS_PULL_REQUEST="${TRAVIS_PULL_REQUEST}" -e TRAVIS_PULL_REQUEST="${TRAVIS_PULL_REQUEST}" -e TRAVIS_JOB_ID="${TRAVIS_JOB_ID}" -e COVERALLS_TOKEN="${COVERALLS_TOKEN}" boulder  ./test.sh
+  - docker-compose run -e GO_VERSION="${GO_VERSION}" -e BOULDER_CONFIG_DIR="${BOULDER_CONFIG_DIR}" -e RUN="${RUN}" -e TRAVIS="${TRAVIS}" -e TRAVIS_COMMIT="${TRAVIS_COMMIT}" -e TRAVIS_PULL_REQUEST="${TRAVIS_PULL_REQUEST}" -e TRAVIS_PULL_REQUEST="${TRAVIS_PULL_REQUEST}" -e TRAVIS_JOB_ID="${TRAVIS_JOB_ID}" -e COVERALLS_TOKEN="${COVERALLS_TOKEN}" boulder ./test.sh
