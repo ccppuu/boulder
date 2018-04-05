@@ -56,16 +56,13 @@ matrix:
   allow_failures:
     - env: RUN="coverage"
 
-env:
-  - DOCKER_COMPOSE_VERSION=1.20.1
-
 # We require a newer version of docker-compose than is installed by way of the
 # "services: docker" directive. Per the travis docs[0] this is best remedied
 # with the following `before_install` commands.
 # [0]: https://docs.travis-ci.com/user/docker/#Using-Docker-Compose
 before_install:
   - sudo rm /usr/local/bin/docker-compose
-  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - curl -L https://github.com/docker/compose/releases/download/1.20.1/docker-compose-$(uname -s)-$(uname -m) > docker-compose
   - chmod +x docker-compose
   - sudo mv docker-compose /usr/local/bin
 
