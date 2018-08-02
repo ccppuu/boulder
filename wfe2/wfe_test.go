@@ -2386,7 +2386,7 @@ func TestRevokeCertificateWrongKey(t *testing.T) {
 
 	test.AssertEquals(t, responseWriter.Code, 403)
 	test.AssertUnmarshaledEquals(t, responseWriter.Body.String(),
-		`{"type":"`+probs.V2ErrorNS+`unauthorized","detail":"The key ID specified in the revocation request does not hold valid authorizations for all names in the certificate to be revoked","status":403}`)
+		`{"type":"`+probs.V2ErrorNS+`unauthorized","detail":"The key ID specified in the revocation request does not hold valid authorizations for at least one name in the certificate to be revoked","status":403}`)
 }
 
 // Valid revocation request for already-revoked cert
