@@ -25,6 +25,10 @@ from acme import messages
 
 import josepy
 
+default_config_dir = os.environ.get('BOULDER_CONFIG_DIR', '')
+if default_config_dir == '':
+    default_config_dir = 'test/config'
+
 def random_domain():
     """Generate a random domain for testing (to avoid rate limiting)."""
     return "rand.%x.xyz" % random.randrange(2**32)
