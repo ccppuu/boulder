@@ -2346,7 +2346,7 @@ func TestRevokeCertificateIssuingAccount(t *testing.T) {
 }
 
 // Valid revocation request for existing, non-revoked cert, signed with account
-// that has authorizations for names in cert
+// that has authorizations for at least one name in cert
 func TestRevokeCertificateWithAuthorizations(t *testing.T) {
 	wfe, _ := setupWFE(t)
 	responseWriter := httptest.NewRecorder()
@@ -2354,14 +2354,22 @@ func TestRevokeCertificateWithAuthorizations(t *testing.T) {
 	test.AssertNotError(t, err, "Failed to make revokeRequestJSON")
 
 	// NOTE(@cpu): Account ID #5 is specifically handled in mocks.go
-	// GetValidAuthorizations to have the authz for the certificate used in
-	// `makeRevokeRequestJSON`
+	// GetValidAuthorizations to have an authz for one of the names in the
+	// certificate used in `makeRevokeRequestJSON`
 	_, _, jwsBody := signRequestKeyID(t, 5, nil, "http://localhost/revoke-cert", string(revokeRequestJSON), wfe.nonceService)
 	wfe.RevokeCertificate(ctx, newRequestEvent(), responseWriter,
 		makePostRequestWithPath("revoke-cert", jwsBody))
-
-	test.AssertEquals(t, responseWriter.Code, 200)
+	test.AssertEquals(t, responseWriter.Code, http.StatusOK)
 	test.AssertEquals(t, responseWriter.Body.String(), "")
+
+	// NOTE(@cpu): Account ID #6 has no authorizations matching the names in the
+	// certificate used in `makeRevokeRequestJSON`
+	responseWriter = httptest.NewRecorder()
+	_, _, jwsBody = signRequestKeyID(t, 6, nil, "http://localhost/revoke-cert", string(revokeRequestJSON), wfe.nonceService)
+	wfe.RevokeCertificate(ctx, newRequestEvent(), responseWriter,
+		makePostRequestWithPath("revoke-cert", jwsBody))
+	test.AssertEquals(t, responseWriter.Code, http.StatusForbidden)
+	test.AssertContains(t, responseWriter.Body.String(), "The key ID specified in the revocation request does not hold valid authorizations for at least one name in the certificate to be revoked")
 }
 
 // A revocation request signed by an unauthorized key.

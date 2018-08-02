@@ -397,7 +397,11 @@ func (sa *StorageAuthority) GetValidAuthorizations(_ context.Context, regID int6
 	} else if regID == 2 {
 		return map[string]*core.Authorization{}, nil
 	} else if regID == 5 || regID == 4 {
-		return map[string]*core.Authorization{"bad.example.com": nil, "bad2.example.com": nil}, nil
+		// RegID 5 and 4 are used in wfe/wfe2 for testing revocation by
+		// authorization. Here we return only *one* authorization matching a name in
+		// the certificate being revoked. This is considered sufficient to revoke
+		// the entire certificate.
+		return map[string]*core.Authorization{"bad.example.com": nil}, nil
 	}
 	return nil, nil
 }

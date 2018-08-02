@@ -690,21 +690,18 @@ func (wfe *WebFrontEndImpl) NewAuthorization(ctx context.Context, logEvent *web.
 	}
 }
 
-func (wfe *WebFrontEndImpl) regHoldsAuthorizations(ctx context.Context, regID int64, names []string) (bool, error) {
+// regHoldsOneAuthorization checks that the given registration ID holds at least
+// ONE valid authorization for a name from `names`. The registration does not
+// need to have valid authorizations for ALL names.
+func (wfe *WebFrontEndImpl) regHoldsOneAuthorization(ctx context.Context, regID int64, names []string) (bool, error) {
 	authz, err := wfe.SA.GetValidAuthorizations(ctx, regID, names, wfe.clk.Now())
 	if err != nil {
 		return false, err
 	}
-	if len(names) != len(authz) {
-		return false, nil
+	if len(authz) > 0 {
+		return true, nil
 	}
-	missingNames := false
-	for _, name := range names {
-		if _, present := authz[name]; !present {
-			missingNames = true
-		}
-	}
-	return !missingNames, nil
+	return false, nil
 }
 
 // RevokeCertificate is used by clients to request the revocation of a cert.
@@ -767,7 +764,7 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *web
 	}
 
 	if !(core.KeyDigestEquals(requestKey, parsedCertificate.PublicKey) || registration.ID == cert.RegistrationID) {
-		valid, err := wfe.regHoldsAuthorizations(ctx, registration.ID, parsedCertificate.DNSNames)
+		valid, err := wfe.regHoldsOneAuthorization(ctx, registration.ID, parsedCertificate.DNSNames)
 		if err != nil {
 			wfe.sendError(response, logEvent, probs.ServerInternal("Failed to retrieve authorizations for names in certificate"), err)
 			return
@@ -775,8 +772,8 @@ func (wfe *WebFrontEndImpl) RevokeCertificate(ctx context.Context, logEvent *web
 		if !valid {
 			wfe.sendError(response, logEvent,
 				probs.Unauthorized("Revocation request must be signed by private key of cert to be revoked, by the "+
-					"account key of the account that issued it, or by the account key of an account that holds valid "+
-					"authorizations for all names in the certificate."),
+					"account key of the account that issued it, or by the account key of an account that holds at "+
+					"least one valid authorization for a name in the certificate."),
 				nil)
 			return
 		}

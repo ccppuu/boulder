@@ -1632,6 +1632,10 @@ func TestRevokeCertificateAlreadyRevoked(t *testing.T) {
 
 func TestRevokeCertificateWithAuthz(t *testing.T) {
 	wfe, _ := setupWFE(t)
+
+	// NOTE(@cpu): Account ID #4 is specifically handled in mocks.go
+	// GetValidAuthorizations to have an authz for one of the names in the
+	// certificate used in `makeRevokeRequestJSON`
 	responseWriter := httptest.NewRecorder()
 	test4JWK := loadPrivateKey(t, []byte(test4KeyPrivatePEM))
 	test4Key, ok := test4JWK.(*rsa.PrivateKey)
@@ -1640,11 +1644,26 @@ func TestRevokeCertificateWithAuthz(t *testing.T) {
 	revokeRequestJSON, err := makeRevokeRequestJSON(nil)
 	test.AssertNotError(t, err, "Unable to create revoke request")
 
+	responseWriter = httptest.NewRecorder()
 	result, _ := accountKeySigner.Sign(revokeRequestJSON)
 	wfe.RevokeCertificate(ctx, newRequestEvent(), responseWriter,
 		makePostRequest(result.FullSerialize()))
-	test.AssertEquals(t, responseWriter.Code, 200)
+	test.AssertEquals(t, responseWriter.Code, http.StatusOK)
 	test.AssertEquals(t, responseWriter.Body.String(), "")
+
+	// NOTE(@cpu): Account ID #2 has no authorizations
+	test2JWK := loadPrivateKey(t, []byte(test2KeyPrivatePEM))
+	test2Key, ok := test2JWK.(*rsa.PrivateKey)
+	test.Assert(t, ok, "Couldn't load RSA key")
+	accountKeySigner2 := newJoseSigner(t, test2Key, wfe.nonceService)
+	test.AssertNotError(t, err, "Unable to create revoke request")
+
+	responseWriter = httptest.NewRecorder()
+	result, _ = accountKeySigner2.Sign(revokeRequestJSON)
+	wfe.RevokeCertificate(ctx, newRequestEvent(), responseWriter,
+		makePostRequest(result.FullSerialize()))
+	test.AssertEquals(t, responseWriter.Code, http.StatusForbidden)
+	test.AssertContains(t, responseWriter.Body.String(), "or by the account key of an account that holds at least one valid authorization for a name in the certificate")
 }
 
 func TestAuthorization(t *testing.T) {

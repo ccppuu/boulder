@@ -230,12 +230,14 @@ def test_revoke_by_issuer():
     client.revoke(josepy.ComparableX509(cert), 0)
 
 def test_revoke_by_authz():
-    domains = [random_domain()]
+    domainA = random_domain()
+    domainB = random_domain()
+    domains = [domainA, domainB]
     order = chisel2.auth_and_issue(domains)
 
-    # create a new client and re-authz
+    # create a new client and re-authz one of the names
     client = chisel2.make_client(None)
-    chisel2.auth_and_issue(domains, client=client)
+    chisel2.auth_and_issue([domainA], client=client)
 
     cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, order.fullchain_pem)
     client.revoke(josepy.ComparableX509(cert), 0)
