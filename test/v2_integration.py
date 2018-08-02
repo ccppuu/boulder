@@ -246,7 +246,7 @@ def test_revoke_by_one_authz():
     client.revoke(josepy.ComparableX509(cert), 0)
 
 def test_revoke_by_authz():
-    domains = [random_domain(), random_domaion()]
+    domains = [random_domain(), random_domain()]
     order = chisel2.auth_and_issue(domains)
 
     # create a new client and re-authz
