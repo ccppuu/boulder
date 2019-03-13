@@ -1,4 +1,5 @@
 #!/usr/bin/env python2.7
+# -*- coding: utf-8 -*-
 import argparse
 import atexit
 import base64
@@ -32,6 +33,10 @@ import OpenSSL
 
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
+
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
 
 class ProcInfo:
     """
@@ -309,9 +314,6 @@ def test_http_challenge_https_redirect():
       elif r['ServerName'] != d:
         raise Exception("Expected all redirected requests to have ServerName {0} got \"{1}\"".format(d, r['ServerName']))
 
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
 class SlowHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
@@ -340,7 +342,7 @@ def test_http_challenge_timeout():
     thread.daemon = False
     thread.start()
 
-    # Pick a random domains
+    # Pick a random domain
     hostname = random_domain()
 
     # Add A record for the domains to ensure the VA's requests are directed
@@ -367,6 +369,82 @@ def test_http_challenge_timeout():
     expectedDuration = 22
     if delta.total_seconds() == 0 or delta.total_seconds() > expectedDuration:
         raise Exception("expected timeout to occur in under {0} seconds. Took {1}".format(expectedDuration, delta.total_seconds()))
+
+#############
+def NoConsensusHTTPRequestHandler(redirect, honesty=1):
+    class NoConsensusHandler(BaseHTTPRequestHandler):
+        redirect = ""
+
+        def __init__(self, *args, **kwargs):
+            BaseHTTPRequestHandler.__init__(self, *args, **kwargs)
+            self.redirect = redirect
+
+        def do_GET(self):
+            self.log_message("\n\nHonesty level: {0}\n\n".format(NoConsensusHandler.honesty))
+            if NoConsensusHandler.honesty > 0:
+                NoConsensusHandler.honesty = NoConsensusHandler.honesty - 1
+                self.log_message("NoConsensusHTTPRequestHandler returning an honest redirect")
+                self.send_response(302)
+                self.send_header("Location", self.redirect)
+                self.end_headers()
+            else:
+                self.log_message("NoConsensusHTTPRequestHandler returning an invalid keyauth")
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'(• ◡•)')
+    NoConsensusHandler.honesty = honesty
+    return NoConsensusHandler
+
+def test_http_multiva_consensus():
+    client = chisel.make_client()
+
+    # Create an authz for a random domain and get its HTTP-01 challenge token
+    hostname, chall = rand_http_chall(client)
+    token = chall.encode("token")
+    # Calculate its keyauth so we can add a good keyauth response on the real
+    # challtestsrv that we redirect to when being honest.
+    resp = chall.response(client.key)
+    keyauth = resp.key_authorization
+    challSrv.add_http01_response(token, keyauth)
+
+    # Also pick another hostname to use for the redirect target
+    redirHostname = random_domain()
+
+    print("\n\nValidating {0} with redirectHostname {1}\n\n".format(hostname, redirHostname))
+
+    # Add an A record for the domains to ensure the VA's requests are directed
+    # to the interface that we bound the HTTPServer to.
+    challSrv.add_a_record(hostname, ["10.88.88.88"])
+
+    # Add an A record for the redirect target that sends it to the real chall
+    # test srv for a valid HTTP-01 response.
+    challSrv.add_a_record(redirHostname, ["10.77.77.77"])
+
+    # Start a simple python HTTP server on port 5002 in its own thread.
+    # NOTE(@cpu): The pebble-challtestsrv binds 10.77.77.77:5002 for HTTP-01
+    # challenges so we must use the 10.88.88.88 address for the throw away
+    # server for this test and add a mock DNS entry that directs the VA to it.
+    redirect = "http://{0}/.well-known/acme-challenge/{1}".format(
+            redirHostname, token)
+    print("\n\nRedir will be to: {0}\n\n".format(redirect))
+    httpd = HTTPServer(('10.88.88.88', 5002), NoConsensusHTTPRequestHandler(redirect))
+    thread = threading.Thread(target = httpd.serve_forever)
+    thread.daemon = False
+    thread.start()
+
+    time.sleep(2)
+
+    print("\n\nHere we goooo\n\n")
+
+    try:
+        auth_and_issue([hostname], client=client, chall_type="http-01")
+    finally:
+        # Shut down the HTTP server gracefully and join on its thread.
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join()
+
+#############
 
 def test_tls_alpn_challenge():
     # Pick two random domains

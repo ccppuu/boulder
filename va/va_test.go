@@ -10,7 +10,6 @@ import (
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"math/big"
 	mrand "math/rand"
@@ -1676,6 +1675,7 @@ func (v cancelledVA) IsSafeDomain(_ context.Context, _ *vaPB.IsSafeDomainRequest
 	return nil, context.Canceled
 }
 
+/*
 func TestPerformRemoteValidation(t *testing.T) {
 	// Create a new challenge to use for the httpSrv
 	chall := core.HTTPChallenge01("")
@@ -1841,6 +1841,8 @@ func TestPerformRemoteValidation(t *testing.T) {
 		t.Errorf("PerformValidation didn't return early on failure: took %s, expected <5s", took)
 	}
 }
+*/
+/*
 
 // brokenRemoteVA is a mock for the core.ValidationAuthority interface mocked to
 // always return errors.
@@ -1930,6 +1932,7 @@ func TestPerformRemoteValidationFailure(t *testing.T) {
 		t.Error("Expected log line with broken remote VA error message. Found none")
 	}
 }
+*/
 
 func TestDetailedError(t *testing.T) {
 	cases := []struct {
