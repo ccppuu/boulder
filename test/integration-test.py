@@ -432,7 +432,8 @@ def test_http_multiva_consensus():
     thread.daemon = False
     thread.start()
 
-    time.sleep(2)
+    # Hack: wait for the server to startup.
+    time.sleep(4)
 
     print("\n\nHere we goooo\n\n")
 

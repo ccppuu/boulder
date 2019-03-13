@@ -1016,8 +1016,9 @@ func (va *ValidationAuthorityImpl) performRemoteValidation(
 	authz core.Authorization,
 	results chan error) {
 	//s := va.clk.Now()
-	for _, remoteVA := range va.remoteVAs {
-		go func(rva RemoteVA) {
+	va.log.Infof("\n\nPerforming remote validations\n\n")
+	for i, remoteVA := range va.remoteVAs {
+		go func(rva RemoteVA, index int) {
 			_, err := rva.PerformValidation(ctx, domain, challenge, authz)
 			if err != nil {
 				// returned error can be a nil *probs.ProblemDetails which breaks the
@@ -1046,8 +1047,9 @@ func (va *ValidationAuthorityImpl) performRemoteValidation(
 					va.log.Errf("Remote VA %q.PerformValidation failed: %s", rva.Addresses, err)
 				}
 			}
+			va.log.Infof("\n\nremote VA %d returned %#v\n\n", index, err)
 			results <- err
-		}(remoteVA)
+		}(remoteVA, i)
 	}
 }
 
@@ -1057,7 +1059,7 @@ func (va *ValidationAuthorityImpl) processRemoteResults(
 	primaryResult *probs.ProblemDetails,
 	remoteErrors chan error) *probs.ProblemDetails {
 
-	fmt.Printf("Processing remote results now k?\n")
+	va.log.Infof("Processing remote results now k?\n")
 
 	required := len(va.remoteVAs) - va.maxRemoteFailures
 	good := 0
@@ -1206,6 +1208,8 @@ func (va *ValidationAuthorityImpl) PerformValidation(ctx context.Context, domain
 	}
 
 	records, prob := va.validate(ctx, core.AcmeIdentifier{Type: "dns", Value: domain}, challenge, authz)
+	va.log.Infof("\n\nPrimary VA returned records: %#v\n", records)
+	va.log.Infof("\n\nPrimary VA returned prob: %#v\n", prob)
 
 	challenge.ValidationRecord = records
 
