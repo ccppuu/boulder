@@ -123,6 +123,8 @@ func (w *bothWriter) logAtLevel(level syslog.Priority, msg string) {
 	var prefix string
 	var err error
 
+	msg = fmt.Sprintf("[%d] %s", os.Getpid(), msg)
+
 	const red = "\033[31m\033[1m"
 	const yellow = "\033[33m"
 
