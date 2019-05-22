@@ -266,6 +266,7 @@ func detailedError(err error) *probs.ProblemDetails {
 		return probs.ConnectionFailure("Server is speaking HTTP/2 over HTTP")
 	}
 
+	fmt.Printf("\n\n\nGeneric failure: %#v\n\n\n", err)
 	return probs.ConnectionFailure("Error getting validation data")
 }
 
