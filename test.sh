@@ -99,13 +99,11 @@ fi
 # Integration tests
 #
 if [[ "$RUN" =~ "integration" ]] ; then
-  if [[ "${INT_FILTER:-}" != "" ]]; then
-    args+=("--filter" "${INT_FILTER}")
-  fi
+  args+=("--filter" "TestPrecertificateRevocation")
 
   source ${CERTBOT_PATH:-/certbot}/${VENV_NAME:-venv}/bin/activate
   DIRECTORY=http://boulder:4000/directory \
-    python2 test/integration-test.py --chisel --gotest "${args[@]}"
+    python2 test/integration-test.py --gotest "${args[@]}"
 fi
 
 # Test that just ./start.py works, which is a proxy for testing that
