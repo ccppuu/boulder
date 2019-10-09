@@ -32,6 +32,8 @@ branches:
 
 env:
     - RUN="integration" BOULDER_CONFIG_DIR="test/config-next"
+    - RUN="integration" BOULDER_CONFIG_DIR="test/config-next"
+    - RUN="integration" BOULDER_CONFIG_DIR="test/config-next"
 
 matrix:
   fast_finish: true
